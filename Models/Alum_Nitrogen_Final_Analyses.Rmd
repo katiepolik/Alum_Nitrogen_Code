@@ -1,0 +1,2190 @@
+---
+title: "Alum_Nitrogen_Final_Analyses"
+output: html_document
+date: "2024-02-03"
+---
+
+```{r setup, include=FALSE}
+library(knitr) #for knitting! and tables
+library(dplyr) #for data manipulation
+library(tidyverse)
+library(mnsentinellakes) #fixing lake IDs
+library(lubridate) #for dates
+library(ggplot2) #for plotting
+library(lme4) #for lmms
+library(lmerTest) #hypothesis testing lmms
+library(sjPlot) #plotting blups
+library(performance) #check_model
+library(purrr) #reduce
+library(emmeans) #post-hoc tests for lme4
+library(multcomp)
+library(NADA2)
+select <- dplyr::select #if you happen to have MASS loaded you need to reassign the select function
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '/Users/catherinepolik/Desktop/Desktop/Grad School/Year 1/Research/Alum')
+```
+
+## Alum Lakes
+
+The following is a list of alum treatments used in this analysis. These treatments have at least 2 years of TP monitoring data in the 5 years preceding the treatment. A comma between dates indicate that the treatments are handled as separate events for this analysis; a slash indicates they are handled as one event.
+
+```{r Alum Lakes}
+#load in alum treated lakes
+LakeList <- read.csv("Alum_Lakes_Table.csv") %>%
+  mutate(DOW = fixlakeid(DOW))%>%
+  arrange(Year)
+
+kable(LakeList)
+```
+
+
+## Data Set Up
+
+Only data from June 1 - Sept 15 are included.
+
+Pre-treatment window is defined as the 2 summers before the alum treatment. If data was not available for the years directly preceding the treatment, the next temporally closest year was used.
+
+Treatments that happen with at least 2 summers in between are analysed as separate treatments. This does mean that some data appears twice in this analysis as the "post" data for the first treatment and the "pre" data for the second treatment. This is still valuable information because this analysis can tell you whether or not the second treatment was effective. 
+
+Treatments that occurred less than 2 summers apart were analyzed as a single treatment, with the pre-treatment window ending when the first dose was applied, the post-treatment window beginning when the second dose was applied, and the data between doses not being used.
+
+```{r, echo = FALSE}
+#import time series data
+setwd("/Users/catherinepolik/Desktop/Desktop/Grad School/Year 1/Research/Katie Timeseries Files/Outputs")
+AlumTimeseries <- read.csv("Timeseries_v6.csv") %>%
+  mutate(DOW = fixlakeid(DOW)) %>%
+  filter(Julian >= 152 & Julian <= 258) #Jun 1 to Sept 15 window
+```
+
+```{r P Filter, echo = FALSE}
+#load in alum dose dates
+DoseDates <- read.csv("Alum_Dose_Dates_forpub.csv") %>%
+  mutate(DOW = fixlakeid(DOW),
+         Pre.Lower = mdy(Pre.Lower), 
+         Pre.Upper = mdy(Pre.Upper), 
+         Post.Lower = mdy(Post.Lower), 
+         Post.Upper = mdy(Post.Upper),
+         Additional.Stop = mdy(Additional.Stop))
+
+# Check how many years of TP data are in the pre-treatment window and in the first 2-year window after treatment
+
+#subset time series data to only P data for alum lakes
+Alum_TP <- AlumTimeseries %>%
+  filter(DOW %in% DoseDates$DOW) %>%
+  filter(parameter == "TP.mg_L") %>%
+  select(DOW, sampleDate, sampleYear, result, gtlt, dataSource) %>%
+  rename(TP.mg_L = result) %>%
+  mutate(TP.log = log(TP.mg_L),
+         sampleDate = as.Date(sampleDate))
+
+DoseDates_TP <- subset(DoseDates, DOW %in% Alum_TP$DOW) %>%
+  mutate(PRE = NA, POST = NA)
+
+#Count years of data before and after dose date
+for(i in 1:dim(DoseDates_TP)[1]) {
+  Alum_TP_subset <- Alum_TP %>%
+    filter(DOW == DoseDates_TP$DOW[i]) %>%
+    mutate(treatment = case_when(sampleDate >= DoseDates_TP$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_TP$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Post.Upper[i] ~ "post"))
+  
+  Alum_TP_subset_2years <- filter(Alum_TP_subset, !is.na(treatment)) %>%
+    select(sampleYear, treatment) %>%
+    distinct() %>%
+    group_by(treatment) %>%
+    summarise(n = dplyr::n(), .groups = "drop") %>%
+    arrange(treatment)
+    
+  DoseDates_TP$PRE[i] <- Alum_TP_subset_2years$n[2]
+  DoseDates_TP$POST[i] <- Alum_TP_subset_2years$n[1]
+}
+
+```
+
+
+These alum treatments have sufficient data for analysis. There are 52 treatments on 41 lakes.
+
+
+## Analysis
+
+The primary method for analysis is based off of Huser et al. (2016). There are some overlapping lakes between the two analyses.
+
+To measure "short-term pre- and post-treatment effectiveness of Al treatment" they log transformed TP data and then standardized it through calculating Z-scores to allow for between lake comparisons. The paper states "Z-scores were calculated for each observation as the difference between the observed value and the mean value for that variable across the four-year monitoring period for each lake, divided by the standard deviation."
+
+Therefore, the equation for a Z-score, as far as I can tell, is :
+
+$$
+\text{Z-score}_i=\frac{ln(TP_i)-mean(ln(TP_{lake}))}{stdev(ln(TP_{lake}))}
+$$
+Where $TP_i$ is a single observation of TP and $TP_{lake}$ is all observations used in the analysis.
+
+## So let's calculate some Z-scores!
+
+We are also interested in the longevity of these effects, so I've binned the post-treatment data into 2-year windows for 8 total years post-alum. Not every treatment will have 2 years of data in every window. Most recent alum treatments won't have data beyond the first window or two.
+
+
+## Phosphorus long term
+```{r Z-score calculation, echo = FALSE}
+#set up a variable to hold all the Z-scores
+TP_Z <- data.frame(DOW = NA, 
+                   sampleDate = NA, 
+                   sampleYear = NA, 
+                   TP.mg_L = NA, 
+                   TP.log = NA,
+                   gtlt = NA,
+                   dataSource = NA,
+                   treatment = NA,
+                   Z = NA,
+                   DOW.App = NA)
+
+DoseDates_TP$Post.4 <- DoseDates_TP$Post.Upper %m+% years(2)
+DoseDates_TP$Post.6 <- DoseDates_TP$Post.Upper %m+% years(4)
+DoseDates_TP$Post.8 <- DoseDates_TP$Post.Upper %m+% years(6)
+
+#Calculate and store Z scores for all observations in the 10 year total window (pre + post)
+for(i in 1:dim(DoseDates_TP)[1]) {
+  TP_subset_Z <- Alum_TP %>%
+    dplyr::filter(DOW == DoseDates_TP$DOW[i]) %>%
+    mutate(treatment = case_when(sampleDate >= DoseDates_TP$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_TP$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Post.Upper[i] ~ "post2",
+                                 sampleDate >= DoseDates_TP$Post.Upper[i] & 
+                                   sampleDate <= DoseDates_TP$Post.4[i] ~ "post4",
+                                 sampleDate >= DoseDates_TP$Post.4[i] & 
+                                   sampleDate <= DoseDates_TP$Post.6[i] ~ "post6",
+                                 sampleDate >= DoseDates_TP$Post.6[i] & 
+                                   sampleDate <= DoseDates_TP$Post.8[i] ~ "post8",)) %>%
+    mutate(DOW.App = paste(DOW,DoseDates_TP$Application[i], sep = ""))
+    
+  TP_subset_Z_2years <- filter(TP_subset_Z, !is.na(treatment) & sampleDate <= DoseDates_TP$Additional.Stop[i])
+  
+  #calculate Z-scores
+  a = mean(TP_subset_Z_2years$TP.log)
+  b = sd(TP_subset_Z_2years$TP.log)
+  TP_subset_Z_2years$Z <- (TP_subset_Z_2years$TP.log - a)/b
+  
+  TP_Z <- rbind(TP_Z, TP_subset_Z_2years)
+}
+
+#remove dummy row
+TP_Z <- TP_Z[-1,]
+#order factors properly
+TP_Z$treatment <- factor(TP_Z$treatment, c("pre", "post2", "post4", "post6", "post8"))
+
+```
+
+Compare Z-scores for pre and post treatment with all of the lakes pooled:
+
+```{r TP Z-score plot, echo=FALSE}
+ggplot(aes(x = treatment, y = Z), data = TP_Z) +
+  geom_boxplot() +
+  geom_jitter(alpha = .05) +
+  theme_classic()+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  labs(y = "TP Z-score", x = "")
+#ggsave("TP_alum_long.pdf")
+
+#I think even if I plot the data as Z-scores, do I want to run my model on the actual data?
+#It doesn't change the general trend but it does actually change which windows are different from eachother
+    #but also the Z score model gives a singular fit... 
+    #I don't think that's actually a problem (the means are the same because we made them all the same) but still
+
+#TP_long_model <- lmer(TP.log ~ treatment + (1|DOW.App), data = TP_Z)
+#summary(TP_long_model)
+#emmeans(TP_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+TP_Z_long_model <- lmer(Z ~ treatment + (1|DOW.App), data = TP_Z)
+summary(TP_Z_long_model)
+emmeans(TP_Z_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+
+cld(glht(TP_Z_long_model, linfct = mcp(treatment = "Tukey")))
+```
+
+## Now let's do the same for Nitrogen
+
+```{r N Lake List, echo = FALSE}
+#subset time series data to only N data for alum lakes
+Alum_TN <- AlumTimeseries %>%
+  filter(DOW %in% DoseDates_TP$DOW) %>%
+  filter(parameter == "TN.mg_L" | parameter == "TKN.mg_L") %>%
+  dplyr::select(DOW, sampleDate, sampleYear, parameter, result, gtlt, dataSource) %>%
+  mutate(TN.log = log(result))
+
+#Count years of data before and after dose date
+for(i in 1:dim(DoseDates_TP)[1]) {
+  Alum_TN_subset <- Alum_TN %>%
+    filter(DOW == DoseDates_TP$DOW[i]) %>%
+    mutate(treatment = case_when(sampleDate >= DoseDates_TP$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_TP$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Post.Upper[i] ~ "post"))
+  
+  Alum_TN_subset_2years <- filter(Alum_TN_subset, !is.na(treatment)) %>%
+    dplyr::select(sampleYear, treatment) %>%
+    distinct() %>%
+    group_by(treatment) %>%
+    summarise(n = dplyr::n(), .groups = "drop") %>%
+    arrange(treatment)
+    
+  DoseDates_TP$TN.PRE[i] <- Alum_TN_subset_2years$n[2]
+  DoseDates_TP$TN.POST[i] <- Alum_TN_subset_2years$n[1]
+}
+
+#only keep lakes that have 2 years of PRE data
+DoseDates_TN <- DoseDates_TP%>%
+  filter(TN.PRE == 2)
+  
+```
+
+
+When we filter for lakes that also have N data, we lose 4 treatments/lakes that we had TP data for.
+
+Let's calculate Z-scores for the TN/TKN data for these lakes!
+
+
+```{r TN Z-score calculation, echo = FALSE}
+#set up a variable to hold all the Z-scores
+TN_Z <- data.frame(DOW = NA, 
+                   sampleDate = NA, 
+                   sampleYear = NA, 
+                   parameter = NA,
+                   result = NA,
+                   gtlt = NA,
+                   dataSource = NA,
+                   TN.log = NA,
+                   treatment = NA,
+                   Z = NA,
+                   DOW.App = NA)
+
+#Calculate and store Z scores for all observations in the 4 year window
+for(i in 1:dim(DoseDates_TN)[1]) {
+  TN_subset_Z <- Alum_TN %>%
+    dplyr::filter(DOW == DoseDates_TN$DOW[i]) %>%
+    dplyr::filter(case_when(DoseDates_TN$N.Type[i] == "TKN.mg_L" ~ parameter == "TKN.mg_L",
+                            DoseDates_TN$N.Type[i] == "TN.mg_L" ~ parameter == "TN.mg_L",
+                            DoseDates_TN$N.Type[i] == "Both" ~ parameter == "TN.mg_L" | parameter =="TKN.mg_L")) %>%
+    arrange(sampleDate, desc(parameter)) %>%  #preferentially keeps TN if TN and TKN are sampled on the same date
+    distinct(sampleDate, .keep_all = T) %>%   #only matters for "Both" sites, all of which have more TN than TKN
+    mutate(treatment = case_when(sampleDate >= DoseDates_TN$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_TN$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_TN$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_TN$Post.Upper[i] ~ "post2",
+                                 sampleDate >= DoseDates_TN$Post.Upper[i] & 
+                                   sampleDate <= DoseDates_TN$Post.4[i] ~ "post4",
+                                 sampleDate >= DoseDates_TN$Post.4[i] & 
+                                   sampleDate <= DoseDates_TN$Post.6[i] ~ "post6",
+                                 sampleDate >= DoseDates_TN$Post.6[i] & 
+                                   sampleDate <= DoseDates_TN$Post.8[i] ~ "post8",)) %>%
+    mutate(DOW.App = paste(DOW, DoseDates_TN$Application[i], sep = ""))
+    
+   TN_subset_Z_2years <- filter(TN_subset_Z, !is.na(treatment) & sampleDate <= DoseDates_TN$Additional.Stop[i])
+  
+  #calculate Z-scores
+  a = mean(TN_subset_Z_2years$TN.log)
+  b = sd(TN_subset_Z_2years$TN.log)
+  TN_subset_Z_2years$Z <- (TN_subset_Z_2years$TN.log - a)/b
+  
+  TN_Z <- rbind(TN_Z, TN_subset_Z_2years)
+}
+
+#remove dummy row
+TN_Z <- TN_Z[-1,]
+#order factors properly
+TN_Z$treatment <- factor(TN_Z$treatment, c("pre", "post2", "post4", "post6", "post8"))
+
+```
+
+
+```{r Z-score plot TN, echo=FALSE}
+ggplot(aes(x = treatment, y = Z), data = TN_Z) +
+  geom_boxplot() +
+  geom_jitter(alpha = 0.05) +
+  theme_classic()+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())+
+  labs(y = "TN or TKN Z-score", x = "")
+#ggsave("TN_alum_long.pdf")
+
+#TN_long_model <- lmer(TN.log ~ treatment + (1|DOW.App), data = TN_Z)
+#summary(TN_long_model)
+#emmeans(TN_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+TN_Z_long_model <- lmer(Z ~ treatment + (1|DOW.App), data = TN_Z)
+summary(TN_Z_long_model)
+emmeans(TN_Z_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+cld(glht(TN_Z_long_model, linfct = mcp(treatment = "Tukey")))
+
+```
+
+
+## We should also, for the sake of completeness, look at chlorophyll-a and secchi
+```{r Chla Lake List, echo = FALSE}
+#subset time series data to only N data for alum lakes
+Alum_CHLA <- AlumTimeseries %>%
+  filter(DOW %in% DoseDates_TP$DOW) %>%
+  filter(parameter == "chla.Pcorr.ug_L" | parameter == "chla.nonPcorr.ug_L") %>%
+  pivot_wider(names_from = parameter, values_from = c(gtlt, result, dataSource)) %>%
+  mutate(chla.Pcorr.ug_L = if_else(is.na(result_chla.Pcorr.ug_L), 
+                                   result_chla.nonPcorr.ug_L, result_chla.Pcorr.ug_L),
+         gtlt = if_else(is.na(result_chla.Pcorr.ug_L), gtlt_chla.nonPcorr.ug_L, gtlt_chla.Pcorr.ug_L),
+         dataSource = if_else(is.na(result_chla.Pcorr.ug_L), dataSource_chla.nonPcorr.ug_L, dataSource_chla.Pcorr.ug_L)) %>%
+  dplyr::select(DOW, sampleDate, sampleYear, chla.Pcorr.ug_L, gtlt, dataSource) %>%
+  mutate(chla.log = log(chla.Pcorr.ug_L))
+
+#Count years of data before and after dose date
+for(i in 1:dim(DoseDates_TP)[1]) {
+  Alum_CHLA_subset <- Alum_CHLA %>%
+    filter(DOW == DoseDates_TP$DOW[i]) %>%
+    mutate(treatment = case_when(sampleDate >= DoseDates_TP$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_TP$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Post.Upper[i] ~ "post"))
+  
+  Alum_CHLA_subset_2years <- filter(Alum_CHLA_subset, !is.na(treatment)) %>%
+    dplyr::select(sampleYear, treatment) %>%
+    distinct() %>%
+    group_by(treatment) %>%
+    summarise(n = dplyr::n(), .groups = "drop") %>%
+    arrange(treatment)
+    
+  DoseDates_TP$CHLA.PRE[i] <- Alum_CHLA_subset_2years$n[2]
+  DoseDates_TP$CHLA.POST[i] <- Alum_CHLA_subset_2years$n[1]
+}
+
+#only keep lakes that have enough data
+DoseDates_CHLA <- DoseDates_TP%>%
+  filter(CHLA.PRE == 2)
+
+```
+
+```{r Z-score calculation, echo = FALSE}
+#set up a variable to hold all the Z-scores
+CHLA_Z <- data.frame(DOW = NA, 
+                   sampleDate = NA, 
+                   sampleYear = NA,
+                   gtlt = NA,
+                   dataSource = NA,
+                   chla.Pcorr.ug_L = NA, 
+                   chla.log = NA, 
+                   treatment = NA,
+                   Z = NA,
+                   DOW.App = NA)
+
+
+#Calculate and store Z scores for all observations in the 4 year window
+for(i in 1:dim(DoseDates_CHLA)[1]) {
+  CHLA_subset_Z <- Alum_CHLA %>%
+    dplyr::filter(DOW == DoseDates_CHLA$DOW[i]) %>%
+   mutate(treatment = case_when(sampleDate >= DoseDates_CHLA$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_CHLA$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_CHLA$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_CHLA$Post.Upper[i] ~ "post2",
+                                 sampleDate >= DoseDates_CHLA$Post.Upper[i] & 
+                                   sampleDate <= DoseDates_CHLA$Post.4[i] ~ "post4",
+                                 sampleDate >= DoseDates_CHLA$Post.4[i] & 
+                                   sampleDate <= DoseDates_CHLA$Post.6[i] ~ "post6",
+                                 sampleDate >= DoseDates_CHLA$Post.6[i] & 
+                                   sampleDate <= DoseDates_CHLA$Post.8[i] ~ "post8",)) %>%
+    mutate(DOW.App = paste(DOW, DoseDates_CHLA$Application[i], sep = ""))
+    
+  CHLA_subset_Z_2years <- filter(CHLA_subset_Z, !is.na(treatment))
+  
+  #calculate Z-scores
+  a = mean(CHLA_subset_Z_2years$chla.log)
+  b = sd(CHLA_subset_Z_2years$chla.log)
+  CHLA_subset_Z_2years$Z <- (CHLA_subset_Z_2years$chla.log - a)/b
+  
+  CHLA_Z <- rbind(CHLA_Z, CHLA_subset_Z_2years)
+}
+
+#remove dummy row
+CHLA_Z <- CHLA_Z[-1,]
+#order factors properly
+CHLA_Z$treatment <- factor(CHLA_Z$treatment, c("pre", "post2", "post4", "post6", "post8"))
+
+```
+
+Compare Z-scores for pre and post treatment with all of the lakes pooled:
+
+```{r TP Z-score plot chla, echo=FALSE}
+ggplot(aes(x = treatment, y = Z), data = CHLA_Z) +
+  geom_boxplot() +
+  geom_jitter(alpha = 0.05) +
+  theme_classic()+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())+
+  labs(y = "Chla Z-score", x = "")
+#ggsave("TN_alum_long.pdf")
+
+#CHLA_long_model <- lmer(chla.log ~ treatment + (1|DOW.App), data = CHLA_Z)
+#summary(CHLA_long_model)
+#emmeans(CHLA_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+CHLA_Z_long_model <- lmer(Z ~ treatment + (1|DOW.App), data = CHLA_Z)
+summary(CHLA_Z_long_model)
+emmeans(CHLA_Z_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+cld(glht(CHLA_Z_long_model, linfct = mcp(treatment = "Tukey")))
+```
+
+## And secchi!
+
+```{r Secchi Lake List, echo = FALSE}
+#subset time series data to only N data for alum lakes
+Alum_S <- AlumTimeseries %>%
+  filter(DOW %in% DoseDates_TP$DOW) %>%
+  filter(parameter == "secchi.m") %>%
+  rename(secchi.m = result) %>%
+  select(DOW, sampleDate, sampleYear, gtlt, dataSource, secchi.m)
+
+#Count years of data before and after dose date
+for(i in 1:dim(DoseDates_TP)[1]) {
+  Alum_secchi_subset <- Alum_S %>%
+    filter(DOW == DoseDates_TP$DOW[i]) %>%
+    mutate(treatment = case_when(sampleDate >= DoseDates_TP$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_TP$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Post.Upper[i] ~ "post"))
+  
+  Alum_secchi_subset_2years <- filter(Alum_secchi_subset, !is.na(treatment)) %>%
+    dplyr::select(sampleYear, treatment) %>%
+    distinct() %>%
+    group_by(treatment) %>%
+    summarise(n = dplyr::n(), .groups = "drop") %>%
+    arrange(treatment)
+    
+  DoseDates_TP$secchi.PRE[i] <- Alum_secchi_subset_2years$n[2]
+  DoseDates_TP$secchi.POST[i] <- Alum_secchi_subset_2years$n[1]
+}
+
+#only keep lakes that have enough data
+DoseDates_S <- DoseDates_TP%>%
+  filter(secchi.PRE >= 2)%>%
+  mutate(EX1 = 2050,
+         EX2 = 2050) %>%
+  mutate(EX1 = case_when(DOW == "27009800" ~ 2016,
+                         (DOW == "19005900" & Application == "a") ~ 1995,
+                         DOW == "19006200" ~ 2019,
+                         (DOW == "19006600" & Application == "a") ~ 1993,
+                         DOW == "19006700" ~ 2019,
+                         DOW == "19013600" ~ 2018,
+                         T ~ EX1)) %>%
+  mutate(EX2 = case_when(DOW == "27009800" ~ 2017,
+                         DOW == "19013600" ~ 2019,
+                         T ~ EX2))
+
+#There is more secchi data than TP data and so I only want to use the same 2 years of data I'm using for the TP analysis. Therefore I need to filter out some extra pre data
+
+```
+
+```{r Z-score calculation, echo = FALSE}
+#set up a variable to hold all the Z-scores
+S_Z <- data.frame(DOW = NA, 
+                   sampleDate = NA, 
+                   sampleYear = NA,
+                   gtlt = NA,
+                  dataSource = NA,
+                   secchi.m = NA, 
+                   treatment = NA,
+                   Z = NA,
+                   DOW.App = NA)
+
+
+#Calculate and store Z scores for all observations in the 10 year window
+for(i in 1:dim(DoseDates_S)[1]) {
+  S_subset_Z <- Alum_S %>%
+    dplyr::filter(DOW == DoseDates_S$DOW[i]) %>%
+   mutate(treatment = case_when(sampleDate >= DoseDates_S$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_S$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_S$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_S$Post.Upper[i] ~ "post2",
+                                 sampleDate >= DoseDates_S$Post.Upper[i] & 
+                                   sampleDate <= DoseDates_S$Post.4[i] ~ "post4",
+                                 sampleDate >= DoseDates_S$Post.4[i] & 
+                                   sampleDate <= DoseDates_S$Post.6[i] ~ "post6",
+                                 sampleDate >= DoseDates_S$Post.6[i] & 
+                                   sampleDate <= DoseDates_S$Post.8[i] ~ "post8",)) %>%
+    mutate(DOW.App = paste(DOW, DoseDates_S$Application[i], sep = ""))
+    
+  S_subset_Z_2years <- filter(S_subset_Z, !is.na(treatment)) %>%
+    filter(sampleYear != DoseDates_S$EX1[i] & sampleYear != DoseDates_S$EX2[i])
+    
+  
+  #calculate Z-scores
+  a = mean(S_subset_Z_2years$secchi.m)
+  b = sd(S_subset_Z_2years$secchi.m)
+  S_subset_Z_2years$Z <- (S_subset_Z_2years$secchi.m - a)/b
+  
+  S_Z <- rbind(S_Z, S_subset_Z_2years)
+}
+
+#remove dummy row
+S_Z <- S_Z[-1,]
+#order factors properly
+S_Z$treatment <- factor(S_Z$treatment, c("pre", "post2", "post4", "post6", "post8"))
+
+```
+
+Compare Z-scores for pre and post treatment with all of the lakes pooled:
+
+```{r TP Z-score plot chla, echo=FALSE}
+ggplot(aes(x = treatment, y = Z), data = S_Z) +
+  geom_boxplot() +
+  geom_jitter(alpha = 0.05) +
+  theme_classic()+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())+
+  labs(y = "Secchi Z-score", x = "")
+#ggsave("TN_alum_long.pdf")
+
+#S_long_model <- lmer(secchi.m ~ treatment + (1|DOW.App), data = S_Z)
+#summary(S_long_model)
+#emmeans(S_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+S_Z_long_model <- lmer(Z ~ treatment + (1|DOW.App), data = S_Z)
+summary(S_Z_long_model)
+emmeans(S_Z_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+cld(glht(S_Z_long_model, linfct = mcp(treatment = "Tukey")))
+
+```
+
+
+
+
+
+
+
+##Alright, now let's look at N:P
+
+N:P ratios are calculated for each date for each lake. It turns out our N:P ratios are also log-normal so I log transform the ratios before calculating Z-scores.
+
+```{r}
+#Let's start with the set of good N data and match that to our P dataset
+
+Alum_NP <- merge(Alum_TN, Alum_TP %>% mutate(sampleDate = as.character(sampleDate)), 
+                           by=c("DOW","sampleDate","sampleYear")) %>%
+  mutate(NP = (result/14)/(TP.mg_L/30.97)) %>%
+  filter(!is.na(NP)) %>%
+  filter(NP != 0) %>%
+  mutate(NP.log = log(NP))
+
+#Count years of data before and after dose date
+for(i in 1:dim(DoseDates_TN)[1]) {
+  Alum_NP_subset <- Alum_NP %>%
+    filter(DOW == DoseDates_TN$DOW[i]) %>%
+    mutate(treatment = case_when(sampleDate >= DoseDates_TN$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_TN$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_TN$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_TN$Post.Upper[i] ~ "post"))
+  
+  Alum_NP_subset_2years <- filter(Alum_NP_subset, !is.na(treatment)) %>%
+    dplyr::select(sampleYear, treatment) %>%
+    distinct() %>%
+    group_by(treatment) %>%
+    summarise(n = dplyr::n(), .groups = "drop") %>%
+    arrange(treatment)
+    
+  DoseDates_TN$NP.PRE[i] <- Alum_NP_subset_2years$n[2]
+  DoseDates_TN$NP.POST[i] <- Alum_NP_subset_2years$n[1]
+}
+
+#only keep lakes that have enough data
+DoseDates_NP <- DoseDates_TN%>%
+  filter(NP.PRE == 2)
+
+```
+
+
+```{r NP Z scores}
+#set up a variable to hold all the Z-scores
+NP_Z <- data.frame(DOW = NA, 
+                   sampleDate = NA, 
+                   sampleYear = NA, 
+                   parameter = NA,
+                   result = NA,
+                   gtlt.x = NA,
+                   dataSource.x = NA,
+                   TN.log = NA, 
+                   TP.mg_L = NA, 
+                   gtlt.y = NA,
+                   dataSource.y = NA,
+                   TP.log = NA,
+                   NP = NA,
+                   NP.log = NA,
+                   treatment = NA,
+                   DOW.App = NA,
+                   NP.Z = NA)
+
+#Calculate and store Z scores for all observations in the 4 year window
+#Calculate and store Z scores for all observations in the 4 year window
+for(i in 1:dim(DoseDates_NP)[1]) {
+  NP_subset_Z <- Alum_NP %>%
+    dplyr::filter(DOW == DoseDates_NP$DOW[i]) %>%
+   mutate(treatment = case_when(sampleDate >= DoseDates_NP$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_NP$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_NP$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_NP$Post.Upper[i] ~ "post2",
+                                 sampleDate >= DoseDates_NP$Post.Upper[i] & 
+                                   sampleDate <= DoseDates_NP$Post.4[i] ~ "post4",
+                                 sampleDate >= DoseDates_NP$Post.4[i] & 
+                                   sampleDate <= DoseDates_NP$Post.6[i] ~ "post6",
+                                 sampleDate >= DoseDates_NP$Post.6[i] & 
+                                   sampleDate <= DoseDates_NP$Post.8[i] ~ "post8",)) %>%
+    mutate(DOW.App = paste(DOW, DoseDates_NP$Application[i], sep = ""))
+    
+  NP_subset_Z_2years <- filter(NP_subset_Z, !is.na(treatment))
+  
+  #calculate Z-scores
+  a = mean(NP_subset_Z_2years$NP.log)
+  b = sd(NP_subset_Z_2years$NP.log)
+  NP_subset_Z_2years$NP.Z <- (NP_subset_Z_2years$NP.log - a)/b
+  
+  NP_Z <- rbind(NP_Z, NP_subset_Z_2years)
+}
+
+#remove dummy row
+NP_Z <- NP_Z[-1,]
+#order factors properly
+NP_Z$treatment <- factor(NP_Z$treatment, c("pre", "post2", "post4", "post6", "post8"))
+```
+
+```{r, echo = FALSE}
+hist(NP_Z$NP, xlab = "N:P Ratio", main = "N:P Ratio Frequency")
+hist(NP_Z$NP.log, xlab = "ln(N:P)", main = "log transformed N:P Ratio Frequency")
+```
+
+```{r TP Z-score plot, echo=FALSE}
+ggplot(aes(x = treatment, y = NP.Z), data = NP_Z) +
+  geom_boxplot() +
+  geom_jitter(alpha = 0.05) +
+  theme_classic()+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())+
+  labs(y = "N:P Z-score", x = "")
+#ggsave("TN_alum_long.pdf")
+
+#NP_long_model <- lmer(NP.log ~ treatment + (1|DOW.App), data = NP_Z)
+#summary(NP_long_model)
+#emmeans(NP_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+NP_Z_long_model <- lmer(NP.Z ~ treatment + (1|DOW.App), data = NP_Z)
+summary(NP_Z_long_model)
+emmeans(NP_Z_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+cld(glht(NP_Z_long_model, linfct = mcp(treatment = "Tukey")))
+```
+
+
+
+Facet Chl a and Secchi plots for publication
+
+```{r, fig.height=7, fig.width=8}
+Secchi_facet <- S_Z %>%
+  select(Z, treatment) %>%
+  mutate(param = "Secchi")
+
+Chla_facet <- CHLA_Z %>%
+  select(Z, treatment) %>%
+  mutate(param = "Chla")
+
+S_Chla_facet <- rbind(Secchi_facet, Chla_facet)
+
+p <- ggplot(aes(x = treatment, y = Z), data = S_Chla_facet) +
+  geom_boxplot() +
+  geom_jitter(alpha = 0.05) +
+  theme_classic()+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+p + facet_wrap(~param, ncol = 1, scales = "free") +
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(2, "lines"),
+        text = element_text(size = 15))
+ggsave("AlumN_FigS1.jpg")
+```
+
+
+Facet TP, TN, and NP plots for publication
+
+```{r, fig.height=10, fig.width=8}
+TP_facet <- TP_Z %>%
+  select(Z, treatment) %>%
+  mutate(param = "TP")
+
+TN_facet <- TN_Z %>%
+  select(Z, treatment) %>%
+  mutate(param = "TN")
+
+NP_facet <- NP_Z %>%
+  select(NP.Z, treatment) %>%
+  rename(Z = NP.Z) %>%
+  mutate(param = "NP")
+
+WQ_facet <- rbind(TP_facet, TN_facet, NP_facet) %>%
+  mutate(param = factor(param, levels=c('TP','TN','NP')))
+
+p <- ggplot(aes(x = treatment, y = Z), data = WQ_facet) +
+  geom_boxplot() +
+  geom_jitter(alpha = 0.05) +
+  theme_classic()+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+p + facet_wrap(~param, ncol = 1, scales = "free") +
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(2, "lines"),
+        text = element_text(size = 15))
+ggsave("AlumN_Fig1.jpg")
+```
+
+
+
+
+
+
+
+Let's look at change in N and P comparatively
+
+```{r}
+
+TP_summary <- TP_Z %>%
+  group_by(DOW.App, treatment)%>%
+  summarise(TP.avg = mean(TP.mg_L)) %>%
+  pivot_wider(names_from = treatment, values_from = c(TP.avg)) %>%
+  mutate(TP.del = post2 - pre,
+         TP.perc = (TP.del/pre)*100)
+
+TN_summary <- TN_Z %>%
+  group_by(DOW.App, treatment)%>%
+  summarise(TN.avg = mean(result)) %>%
+  pivot_wider(names_from = treatment, values_from = c(TN.avg)) %>%
+  mutate(TN.del = post2 - pre,
+         TN.perc = (TN.del/pre)*100)
+
+NP_summary <- merge(TN_summary, TP_summary, by = c("DOW.App"))
+
+```
+
+The change in TN is correlated to the change in TP
+```{r}
+ggplot(aes(x = TP.del, y=TN.del), data = NP_summary) +
+  geom_point() +
+  #geom_point(aes(x = TP.del, y=TN.del), data = NP_summary %>% filter(doseYear <= 2002), color = "red") +
+  theme_classic() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_smooth(method='lm', formula= y~x, se=F, color = "black") +
+  theme(text = element_text(size = 15))
+
+#If you want to plot the points by date of application
+#DoseDates_Year <- DoseDates_TP %>%
+#  mutate(DOW.App = str_c(DOW, Application, sep=""),
+#         doseYear = year(Post.Lower)) %>%
+#  select(DOW.App, doseYear)
+#NP_summary <- left_join(NP_summary,DoseDates_Year, by = "DOW.App")
+
+ggplot(aes(x = TP.perc, y=TN.perc), data = NP_summary) +
+   geom_point() +
+  #geom_point(aes(x = TP.perc, y=TN.perc), data = NP_summary %>% filter(doseYear <= 2002), color = "red") +
+  coord_equal() +
+  xlim(-75, 32) +
+  ylim(-75, 32) +
+  theme_classic() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_smooth(method='lm', formula= y~x, se=F, color = "black") +
+  theme(text = element_text(size = 15)) +
+  xlab("") + ylab("")
+ggsave("AlumN_Fig2.jpg")
+
+#summary(lm(TN.del ~ TP.del, data = NP_summary))
+
+summary(lm(TN.perc ~ TP.perc, data = NP_summary))
+
+```
+
+
+```{r}
+
+#plot with molar ratios
+a = c(0.001,0.01)
+b = c(0.02,0.2)
+Redfield <- data.frame(a, b)
+
+c = c(0.0005,0.01)
+d = c(0.025,0.5)
+Hecky <- data.frame(c, d)
+
+Alum_summary_molar <- NP_summary %>%
+  mutate(TP.pre = pre.y/30.97,
+         TP.post = post2.y/30.97,
+         TN.pre = pre.x/14,
+         TN.post = post2.x/14,
+         TP.post.last = post8.y/30.97,
+         TN.post.last = post8.x/14,
+         NP.pre = TN.pre/TP.pre,
+         NP.post = TN.post/TP.post) 
+
+ggplot(aes(x = TP.pre, y=TN.pre), data = Alum_summary_molar) +
+  geom_point(shape = 1) +
+  coord_equal() +
+  scale_y_log10() +
+  scale_x_log10() +
+  geom_line(data = Redfield, aes(x = a, y = b)) +
+  geom_line(data = Hecky, aes(x = c, y = d))+
+  geom_point(aes(x = TP.post, y = TN.post), data = Alum_summary_molar) +
+  theme_classic() 
+  #+
+  #geom_point(aes(x = TP.post.last, y = TN.post.last, color = "red"), data = Alum_summary_molar)
+  
+##plot with mass ratios
+a = c(0.02500001,0.01*30.97)
+b = c(0.2260252,0.2*14)
+Redfield <- data.frame(a, b)
+
+c = c(0.01,0.01*30.97)
+d = c(0.2260252,0.5*14)
+Hecky <- data.frame(c, d)
+
+ggplot(aes(x = pre.y, y=pre.x), data = Alum_summary_molar) +
+  geom_point(shape = 1, cex = 2) +
+  coord_equal() +
+  scale_y_log10() +
+  scale_x_log10() +
+  geom_line(data = Redfield, aes(x = a, y = b)) +
+  geom_line(data = Hecky, aes(x = c, y = d))+
+  geom_point(aes(x = post2.y, y = post2.x), data = Alum_summary_molar, cex = 2.1) +
+  theme_classic() +
+  theme(text = element_text(size = 12))
+ggsave("AlumN_Fig3.jpg")
+
+t.test(log(Alum_summary_molar$NP.pre), log(Alum_summary_molar$NP.post), paired = T)
+t.test(Alum_summary_molar$NP.pre, Alum_summary_molar$NP.post, paired = T)
+
+mean(Alum_summary_molar$NP.post)
+mean(Alum_summary_molar$NP.pre)
+
+```
+Importance of lake depth
+```{r}
+Lake_depth <- LakeList %>%
+  select(DOW, AvgDepth.m)
+
+Alum_depth <- Alum_summary_molar %>%
+  mutate(DOW = substr(DOW.App, 1, 8))
+
+Alum_depth2 <- left_join(Alum_depth, Lake_depth, by = "DOW")
+
+ggplot(aes(x = AvgDepth.m, y=TN.perc), data = Alum_depth2) +
+  geom_point() +
+  theme_classic() +
+  xlab("") + ylab("% change TKN") +
+  geom_smooth(method='lm', formula= y~x, se=F, color = "black") 
+
+ggplot(aes(x = AvgDepth.m, y=TN.del), data = Alum_depth2) +
+  geom_point() +
+  theme_classic() +
+  xlab("") + ylab("Change in TKN (mg N/L)") +
+  geom_smooth(method='lm', formula= y~x, se=F, color = "black") 
+
+ggplot(aes(x = AvgDepth.m, y=TP.perc), data = Alum_depth2) +
+  geom_point() +
+  theme_classic() +
+  xlab("") + ylab("% change TP") +
+  geom_smooth(method='lm', formula= y~x, se=F, color = "black") 
+
+ggplot(aes(x = AvgDepth.m, y=TP.del), data = Alum_depth2) +
+  geom_point() +
+  theme_classic() +
+  xlab("") + ylab("Change in TP (mg P/L)") +
+  geom_smooth(method='lm', formula= y~x, se=F, color = "black") 
+
+summary(lm(data = Alum_depth2, TN.perc~AvgDepth.m))
+summary(lm(data = Alum_depth2, TP.perc~AvgDepth.m))
+summary(lm(data = Alum_depth2, TN.del~AvgDepth.m))
+summary(lm(data = Alum_depth2, TN.del~AvgDepth.m))
+```
+Let's look at Bald Eagle as a case study. Kohlman could be another good case study choice because I could take a stab at total N in plant biomass since they did a major study on total P biomass to study the impact of mowing
+
+```{r}
+
+#let's see where the two treatments fall in shifting TN and TP
+ggplot(aes(x = pre.y, y=pre.x), data = Alum_summary_molar) +
+  geom_point(shape = 1, cex = 2) +
+  coord_equal() +
+  scale_y_log10() +
+  scale_x_log10() +
+  geom_line(data = Redfield, aes(x = a, y = b)) +
+  geom_line(data = Hecky, aes(x = c, y = d))+
+  geom_point(aes(x = post2.y, y = post2.x), data = Alum_summary_molar, cex = 2.1) +
+  theme_classic() +
+  theme(text = element_text(size = 12)) +
+  geom_point(aes(x = pre.y, y=pre.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200a"), 
+             color = "red", cex = 2, shape = 1) +
+  geom_point(aes(x = post2.y, y = post2.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200a"), 
+             color = "red", cex = 2.1) +
+  geom_point(aes(x = pre.y, y=pre.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200b"), 
+             color = "blue", cex = 2, shape = 1) +
+  geom_point(aes(x = post2.y, y = post2.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200b"), 
+             color = "blue", cex = 2.1) 
+
+#let's see where the data moves to through the 8 years post
+ggplot(aes(x = pre.y, y=pre.x), data = Alum_summary_molar) +
+  #geom_point(shape = 1, cex = 2) +
+  coord_equal() +
+  scale_y_log10() +
+  scale_x_log10() +
+  geom_line(data = Redfield, aes(x = a, y = b)) +
+  geom_line(data = Hecky, aes(x = c, y = d))+
+  #geom_point(aes(x = post2.y, y = post2.x), data = Alum_summary_molar, cex = 2.1) +
+  theme_classic() +
+  theme(text = element_text(size = 12)) +
+  geom_point(aes(x = pre.y, y=pre.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200a"), 
+             color = "red", cex = 2) +
+  geom_point(aes(x = pre.y, y=pre.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200b"), 
+             color = "orange", cex = 2) +
+  geom_point(aes(x = post2.y, y = post2.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200b"), 
+             color = "yellow", cex = 2) +
+    geom_point(aes(x = post4.y, y = post4.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200b"), 
+             color = "green", cex = 2) +
+    geom_point(aes(x = post6.y, y = post6.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200b"), 
+             color = "blue", cex = 2) +
+    geom_point(aes(x = post8.y, y = post8.x), 
+             data = Alum_summary_molar %>% filter(DOW.App == "62000200b"), 
+             color = "purple", cex = 2) 
+
+
+
+#A quick glance at the N and P timeseries
+be.wq <- AlumTimeseries %>%
+  filter(DOW == "62000200",
+         sampleYear >= 2010 & sampleYear <= 2023)
+
+ggplot(aes(x = as.POSIXct(sampleDate), y = result), data = be.wq %>% filter(parameter == "TKN.mg_L")) +
+  geom_point() +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10)) +
+  theme_classic()
+
+ggplot(aes(group = as.factor(sampleYear), y = result), data = be.wq %>% filter(parameter == "TKN.mg_L")) +
+  geom_boxplot() +
+  theme_classic()
+
+ggplot(aes(x = as.POSIXct(sampleDate), y = result), data = be.wq %>% filter(parameter == "TP.mg_L")) +
+  geom_point() +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10)) +
+  theme_classic()
+
+ggplot(aes(group = as.factor(sampleYear), y = result), data = be.wq %>% filter(parameter == "TP.mg_L")) +
+  geom_boxplot() +
+  theme_classic()
+
+```
+
+Let's plot the phytoplankton data in a similar manner
+
+```{r}
+#import and clean phyto data
+
+setwd("~/Desktop/Desktop/Grad School/Year 2/Hansen Lab Project")
+CellCounts <- read.csv("Ramsey_Phyto_CellCounts.csv")
+PhytoID <- read.csv("PhytoID.csv")
+
+## Data Wrangling  -------------------------
+# Transform data into long format
+sp_vec <- select(CellCounts, starts_with("NAME")) %>% as.matrix() %>% t() %>% as.vector()
+co_vec <- select(CellCounts, starts_with("CONC")) %>% as.matrix() %>% t() %>% as.vector()
+col_num <- length(names(select(CellCounts, starts_with("NAME"))))
+
+CellCounts.long <- tibble(DNRID = rep(unlist(CellCounts[,"DNRID"]), each = col_num),
+                          DATE = rep(unlist(CellCounts[,"DATE"]), each = col_num),
+                          SITE = rep(unlist(CellCounts[,"SITE"]), each = col_num),
+                          NAME = sp_vec,
+                          CONC.NO.ML = co_vec) %>% 
+                    subset(NAME != "#N/A") %>%
+                    mutate(CONC.NO.ML = as.numeric(CONC.NO.ML))
+
+# Transform data into wide format
+CellCounts.wide <- CellCounts.long %>%
+  pivot_wider(id_cols = c(DNRID, DATE, SITE), 
+              names_from = NAME, 
+              values_from = CONC.NO.ML, 
+              values_fn = sum)
+
+#NOTE Sometimes a single taxa will have multiple count entries for one site/date.
+#You can find the duplicates by going into CellCounts.wide and searching for ","
+#for now we solve this by summing, making the assumption that these counts are split for some reason?
+
+## Group Counts --------------------------
+# I have checked that all of the taxa (92) in CellCounts.wide are also in PhytoID. 
+# If more taxa get added to CellCounts.wide, you should check again.
+# (e.g. when we add the 2023 data)
+
+# subset the phytoIDs to only be the taxa present in the cell counts
+TAXA.counts <- names(CellCounts.wide)
+TAXA.ids <- as.vector(PhytoID$NAME)
+unused.taxa <- setdiff(TAXA.ids, TAXA.counts)
+PhytoID.sub <- PhytoID[! PhytoID$NAME %in% unused.taxa,2:3]
+PhytoID.sub <- PhytoID.sub[!duplicated(PhytoID.sub),] #some taxa have two IDs??
+                
+# make vectors of taxa names within each group
+cyanophyta <- as.vector(subset(PhytoID.sub, GROUP == "CYANOPHYTA (BLUE-GREEN)")$NAME)
+chlorophyta <- as.vector(subset(PhytoID.sub, GROUP == "CHLOROPHYTA (GREEN)")$NAME)
+diatom <- as.vector(subset(PhytoID.sub, GROUP == "BACILLARIOPHYCEAE (DIATOM)")$NAME)
+euglenophyta <- as.vector(subset(PhytoID.sub, GROUP == "EUGLENOPHYTA (EUGLENOIDS)")$NAME)
+dinoflag <- as.vector(subset(PhytoID.sub, GROUP == "PYRRHOPHYTA (DINOFLAGELLATES)")$NAME)
+cryptophyta <- as.vector(subset(PhytoID.sub, GROUP == "CRYPTOPHYTA (CRYPTOMONADS)")$NAME)
+chrysophyta <- as.vector(subset(PhytoID.sub, GROUP == "CHRYSOPHYTA (YELLOW-GREEN)")$NAME)
+taxa.groups <- c("CYANOS", "GREEN", "DIATOM" , "EUGLENA", "DINOS", "CRYPTOS", "CHRYSOS")
+
+# Calculate Group Counts
+CellCounts.groups <- CellCounts.wide %>% 
+  mutate(CYANOS = rowSums(.[cyanophyta], na.rm = T),
+         GREEN = rowSums(.[chlorophyta], na.rm = T),
+         DIATOM = rowSums(.[diatom], na.rm = T),
+         EUGLENA = rowSums(.[euglenophyta], na.rm = T),
+         DINOS = rowSums(.[dinoflag], na.rm = T),
+         CRYPTOS = rowSums(.[cryptophyta], na.rm = T),
+         CHRYSOS = rowSums(.[chrysophyta], na.rm = T)) %>%
+  mutate(ALL.CELLS = rowSums(.[taxa.groups], na.rm = T)) %>%
+  mutate(CYANOS.rel = CYANOS/ALL.CELLS, 
+         GREEN.rel = GREEN/ALL.CELLS, 
+         DIATOM.rel = DIATOM/ALL.CELLS, 
+         EUGLENA.rel = EUGLENA/ALL.CELLS, 
+         DINOS.rel = DINOS/ALL.CELLS, 
+         CRYPTOS.rel = CRYPTOS/ALL.CELLS, 
+         CHRYSOS.rel = CHRYSOS/ALL.CELLS ) %>%
+  mutate(YEAR = as.numeric(substr(DATE, 1, 4)),
+         JULIANDAY = as.numeric(format(as.Date(as.character(DATE), format = "%Y%m%d"),"%j")),
+         Date.yes = format(as.Date(as.character(DATE), format = "%Y%m%d")))
+
+###pick only bald eagle and kohlman and como --------------
+#The chem date window is 152 to 258 but cyano peaks are sometimes later in sept due to the exact day that the sampling happened
+#So I'm going to make the phyto data 152 through Sept 30 (273)
+CellCounts.BE <- CellCounts.groups %>%
+  filter(DNRID == "62-0002",
+         JULIANDAY >= 152 & JULIANDAY <= 273)
+
+CellCounts.KM <- CellCounts.groups %>%
+  filter(DNRID == "62-0006",
+         JULIANDAY >= 152 & JULIANDAY <= 273)
+
+CellCounts.CO <- CellCounts.groups %>%
+  filter(DNRID == "62-0055",
+         JULIANDAY >= 152 & JULIANDAY <= 273)
+
+
+```
+
+There are a lot of different ways we could think about the phytos. Let's look at all counts, just cyanos, and then how many of those are potentially diazotrophs
+
+```{r}
+#All Cells
+ggplot(aes(group = as.factor(YEAR), y = ALL.CELLS), data = CellCounts.BE) +
+  geom_boxplot() +
+  theme_classic() +
+  ylab("Total Natural Units")
+
+#All Cyanos
+ggplot(aes(group = as.factor(YEAR), y = CYANOS), data = CellCounts.BE) +
+  geom_boxplot() +
+  theme_classic() +
+  ylab("Total Cyanos (NU)")
+
+#Max Cells
+CC.BE.max <- CellCounts.BE %>%
+  filter(JULIANDAY > 180) %>%
+  group_by(YEAR) %>%
+  slice(which.max(CYANOS))
+
+ggplot(aes(YEAR, ALL.CELLS), data = CC.BE.max ) +
+  geom_col() +
+  theme_classic() +
+  ylab("Maximum Phyto Count (NU)")
+
+#by cyano taxa (longer)
+#CC.BE.long <- CC.BE.max %>%
+#  select(any_of(c(cyanophyta,diatom, chlorophyta, euglenophyta, dinoflag, cryptophyta, chrysophyta)), YEAR) %>%
+#  pivot_longer(cols = any_of(c(cyanophyta, diatom, chlorophyta, euglenophyta, dinoflag, cryptophyta, chrysophyta)), names_to = ("taxa")) %>%
+#  filter(!is.na(value) & value != 0) %>%
+#  mutate(main.taxa = case_when(taxa == "OSCILLATORIA" ~ "OSCILLATORIA",
+#                               taxa == "CHROOCOCCUS" ~ "CHROOCOCCUS",
+#                               taxa == "CERATIUM" ~ "CERATIUM",
+#                               taxa == "ANABAENA" ~ "ANABAENA",
+#                               taxa == "CRYPTOMONAS" ~ "CRYPTOMONAS",
+#                               TRUE ~ "OTHER"))
+
+
+#ggplot(aes(x = YEAR, y = value, fill = main.taxa), data = CC.BE.long) +
+#  geom_col() +
+#  theme_classic()
+
+#by cyano taxa (longer)
+CC.BE.long <- CC.BE.max %>%
+  select(any_of(cyanophyta), YEAR) %>%
+  pivot_longer(cols = any_of(cyanophyta), names_to = ("taxa")) %>%
+  filter(!is.na(value) & value != 0) %>%
+  mutate(main.taxa = case_when(taxa == "OSCILLATORIA" ~ "OSCILLATORIA",
+                               taxa == "CHROOCOCCUS" ~ "CHROOCOCCUS",
+                               taxa == "ANABAENA" ~ "ANABAENA",
+                               TRUE ~ "OTHER"),
+         main.taxa = factor(main.taxa, c("CHROOCOCCUS", "ANABAENA", "OSCILLATORIA","OTHER")))
+
+
+ggplot(aes(x = YEAR, y = value, fill = main.taxa), data = CC.BE.long) +
+  geom_col() +
+  theme_classic()
+
+
+#by heterocystous
+nonhet = c("OSCILLATORIA", "CHROOCOCCUS", "APHANOCAPSA", "GLOEOCAPSA" , "COELOSPHAERIUM", "MICROCYSTIS", "LYNGBYA", "RADIOCOCCUS")
+
+CC.BE.het <- CC.BE.long %>%
+  mutate(taxa = if_else(taxa %in% nonhet, "NON-HET", "HET"))
+
+ggplot(aes(x = YEAR, y = value, fill = taxa), data = CC.BE.het) +
+  geom_col() +
+  theme_classic()
+
+#by diazotrophy, as some genera of non-heterocystous cyanos can fix N (but it isn't guaranteed they will)
+nondiaz = c("CHROOCOCCUS", "APHANOCAPSA",  "COELOSPHAERIUM", "MICROCYSTIS", "RADIOCOCCUS")
+
+CC.BE.diaz <- CC.BE.long %>%
+  mutate(taxa = if_else(taxa %in% nondiaz, "NON-DIAZ", "DIAZ"))
+
+ggplot(aes(x = YEAR, y = value, fill = taxa), data = CC.BE.diaz) +
+  geom_col() +
+  theme_classic()
+
+```
+
+
+Let's also look at plant surveys!
+
+```{r}
+setwd("/Users/catherinepolik/Desktop/Desktop/Grad School/Year 1/Research/Plants")
+
+#### Read in Data ####
+Plants_BE <- read.csv("Bald_Eagle_Macrophytes.csv")
+
+Plants_BE_fall <- Plants_BE %>%
+  select(-lake_name, -lemna_sp, -wolffia_sp, -lemna_trisulca, -drepanocladus_sp, -unk_sp, -unk_sp.1, -unk_sp.2, 
+         -survey_notes, -sample_notes) %>%
+  mutate(SURVEY_START = as.Date(parse_date_time(SURVEY_START, orders = 'ymd'))) %>%
+  mutate(Julian = yday(SURVEY_START), 
+         Month = month(SURVEY_START), 
+         Year = year(SURVEY_START))%>%
+  filter(Month == 8 | Month == 9) %>%
+mutate(VEG = select(., ceratophyllum_demersum:ranunculus_sp) %>% rowSums(na.rm = TRUE),
+       NO_VEG_FOUND = if_else(VEG == 0, 1, 0))
+
+Plants_BE_perc <- Plants_BE_fall %>%
+  group_by(SURVEY_START) %>%
+  summarise(n = n(), VEG_all = sum(NO_VEG_FOUND == 0)) %>%
+  mutate(perc.veg = VEG_all/n*100,
+         sampleYear = year(SURVEY_START))
+
+```
+
+make some plots 
+```{r}
+
+#proportion vegetated at intermediate depths
+BE_mid <- Plants_BE_fall %>%
+  filter(depth_ft <= 11 & depth_ft >= 5)%>%
+  group_by(SURVEY_START, Year) %>%
+  summarise(n = n(), NO_PLANT = sum(NO_VEG_FOUND)) %>%
+  mutate(prop.veg = 1 - (NO_PLANT / n),
+         Year = as.factor(Year))
+
+ggplot(aes(x = Year, y = prop.veg), data = BE_mid) +
+  geom_col() +
+  theme_classic()
+
+
+#max depth of vegetation as defined as the 95th percentile of vegetated points
+Plants_BE_max <- data.frame(Year = 2010:2023,
+                            max = NA)
+
+for (i in 1:14) {
+  temp <- filter(Plants_BE_fall, Year == Plants_BE_max$Year[i] & NO_VEG_FOUND == 0) %>%
+    arrange(depth_ft)
+  
+  a <- round(dim(temp)[1]*0.95)
+  
+  if (a != 0) {
+    Plants_BE_max$max[i] <- temp$depth_ft[a]
+  }
+  
+  else{Plants_BE_max$max[i] <- NA}
+}
+
+ggplot(aes(x = Year, y = max), data = Plants_BE_max) +
+  geom_col() +
+  theme_classic()
+
+#normalize to first year of data
+Plants_BE_max$norm <- Plants_BE_max$max - mean(Plants_BE_max$max[1:3])
+
+ggplot(aes(x = Year, y = norm), data = Plants_BE_max) +
+  geom_col() +
+  theme_classic()
+
+```
+
+
+
+Try to combine N, cyano, and plant
+
+```{r, fig.height=10, fig.width=8}
+BE_TKN_facet <- be.wq %>%
+  filter(parameter == "TKN.mg_L") %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA)
+
+BE_TP_facet <- be.wq %>%
+  filter(parameter == "TP.mg_L") %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA)
+
+BE_CC_facet <- CC.BE.diaz %>%
+  select(-main.taxa)%>%
+  rename(sampleYear = YEAR, result = value) %>%
+  filter(sampleYear >= 2010) %>%
+  mutate(sampleDate = NA, 
+         parameter = "cyano")
+  
+BE_plant_facet <- Plants_BE_max %>%
+  rename(result = norm, sampleYear = Year) %>%
+  select(-max) %>%
+  mutate(sampleDate = NA,
+         taxa = NA,
+         parameter = "plants")
+
+BE_facet <- rbind(BE_TP_facet, BE_TKN_facet, BE_CC_facet, BE_plant_facet) %>%
+  mutate(parameter = factor(parameter, c("TP.mg_L","TKN.mg_L", "cyano", "plants")))
+
+ggplot(aes(x = sampleYear, y = result), data = BE_facet) +
+  facet_wrap(~parameter, ncol = 1, scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = BE_facet %>% filter(parameter == "TP.mg_L")) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = BE_facet %>% filter(parameter == "TKN.mg_L")) +
+  expand_limits(y=0)+
+  geom_col(aes(fill = taxa), data = BE_facet %>% filter(parameter == "cyano"), width = 0.8) +
+  geom_col(aes(fill = parameter), data = BE_facet %>% filter(parameter == "plants"), width = 0.8)+
+    scale_fill_manual(values = c("darkgreen","#75d054ff", "#2c728eff"))+
+  theme_classic()+
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(1, "lines"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("")
+ggsave("AlumN_Fig4.jpg")
+
+ggplot(aes(x = sampleYear, y = result), data = BE_facet) +
+  facet_wrap(~parameter, ncol = 1, scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = BE_facet %>% filter(parameter == "TKN.mg_L")) +
+  expand_limits(y=0)+
+  geom_col(aes(fill = taxa), data = BE_facet %>% filter(parameter == "cyano"), width = 0.8) +
+  geom_col(aes(fill = parameter), data = BE_facet %>% filter(parameter == "plants"), width = 0.8)+
+    scale_fill_manual(values = c("#3b3939","#999999", "#3b3939"))+
+  theme_classic()+
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(1, "lines"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("")
+ggsave("AlumN_Fig5b.jpg")
+
+ggplot(aes(x = sampleYear, y = result), data = BE_facet) +
+  facet_wrap(~parameter, ncol = 1, scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = BE_facet %>% filter(parameter == "TP.mg_L")) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = BE_facet %>% filter(parameter == "TKN.mg_L")) +
+  expand_limits(y=0)+
+  geom_col(aes(fill = taxa), data = BE_facet %>% filter(parameter == "cyano"), width = 0.8) +
+  geom_col(aes(fill = parameter), data = BE_facet %>% filter(parameter == "plants"), width = 0.8)+
+    scale_fill_manual(values = c("darkgreen","#7cae00", "#f8766d","#00bfc4","#c77cff"))+
+  theme_classic()+
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(1, "lines"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("")
+ggsave("AlumN_Fig5f.jpg")
+
+```
+
+
+
+Let's try this same analysis for Kohlman and see how it goes...
+
+```{r}
+#wrangle data
+setwd("/Users/catherinepolik/Desktop/Desktop/Grad School/Year 1/Research/Plants")
+
+#### Read in Data ####
+Plants_KM <- read.csv("Kohlman_Macrophytes.csv")
+
+Plants_KM_fall <- Plants_KM %>%
+  select(-lake_name, -algae, -wolffia_sp, -unk_sp, -algae.1, -wolffia_columbiana, -lemna_minor,
+         -lemna_trisulca, -spirodela_polyrrhiza, -spirodela_polyrrhiza.1, -no_veg_found, -latitude, -longitude,
+         -substrate) %>%
+  mutate(SURVEY_START = as.Date(parse_date_time(SURVEY_START, orders = 'ymd'))) %>%
+  mutate(Julian = yday(SURVEY_START), 
+         Month = month(SURVEY_START), 
+         Year = year(SURVEY_START))%>%
+  filter(Month == 8 | Month == 9) %>%
+mutate(VEG = select(., ceratophyllum_demersum:potamogeton_sp.1) %>% rowSums(na.rm = TRUE),
+       NO_VEG_FOUND = if_else(VEG == 0, 1, 0))
+
+Plants_KM_perc <- Plants_KM_fall %>%
+  group_by(SURVEY_START) %>%
+  summarise(n = n(), VEG_all = sum(NO_VEG_FOUND == 0)) %>%
+  mutate(perc.veg = VEG_all/n*100,
+         sampleYear = year(SURVEY_START))
+
+#max depth of vegetation as defined as the 95th percentile of vegetated points
+Plants_KM_max <- data.frame(Year = 2008:2014,
+                            max = NA)
+
+for (i in 1:7) {
+  temp <- filter(Plants_KM_fall, Year == Plants_KM_max$Year[i] & NO_VEG_FOUND == 0) %>%
+    arrange(depth_ft)
+  
+  a <- round(dim(temp)[1]*0.95)
+  
+  if (a != 0) {
+    Plants_KM_max$max[i] <- temp$depth_ft[a]
+  }
+  
+  else{Plants_KM_max$max[i] <- NA}
+}
+
+ggplot(aes(x = Year, y = max), data = Plants_KM_max) +
+  geom_col() +
+  theme_classic()
+
+#normalize to first year of data
+Plants_KM_max$norm <- Plants_KM_max$max - mean(Plants_KM_max$max[1:2], na.rm = T)
+
+ggplot(aes(x = Year, y = norm), data = Plants_KM_max) +
+  geom_col() +
+  theme_classic()
+
+```
+
+Data wrangle some cyanos
+
+```{r}
+#All Cells
+ggplot(aes(group = as.factor(YEAR), y = ALL.CELLS), data = CellCounts.KM) +
+  geom_boxplot() +
+  theme_classic() +
+  ylab("Total Natural Units")
+
+#All Cyanos
+ggplot(aes(group = as.factor(YEAR), y = CYANOS), data = CellCounts.KM) +
+  geom_boxplot() +
+  theme_classic() +
+  ylab("Total Cyanos (NU)")
+
+#Max Cells
+CC.KM.max <- CellCounts.KM %>%
+  group_by(YEAR) %>%
+  slice(which.max(ALL.CELLS))
+
+ggplot(aes(YEAR, ALL.CELLS), data = CC.KM.max ) +
+  geom_col() +
+  theme_classic() +
+  ylab("Maximum Phyto Count (NU)")
+
+CC.KM.max <- CellCounts.KM %>%
+  filter(JULIANDAY > 182) %>%
+  group_by(YEAR) %>%
+  slice(which.max(CYANOS))
+
+ggplot(aes(YEAR, CYANOS), data = CC.KM.max ) +
+  geom_col() +
+  theme_classic() +
+  ylab("Maximum CYANO Count (NU)")
+
+#by cyano taxa (longer)
+CC.KM.long <- CC.KM.max %>%
+  select(any_of(cyanophyta), YEAR) %>%
+  pivot_longer(cols = any_of(cyanophyta), names_to = ("taxa")) %>%
+   filter(!is.na(value) & value != 0) %>%
+  mutate(main.taxa = case_when(taxa == "OSCILLATORIA" ~ "3OSCILLATORIA",
+                               taxa == "ANABAENA" ~ "2ANABAENA",
+                               taxa == "PLEUROCAPSA" ~ "1PLEUROCAPSA",
+                               TRUE ~ "4OTHER"),
+         main.taxa = factor(main.taxa, c("1PLEUROCAPSA", "2ANABAENA", "3OSCILLATORIA", "4OTHER")))
+
+
+
+ggplot(aes(x = YEAR, y = value, fill = main.taxa), data = CC.KM.long) +
+  geom_col() +
+  theme_classic()
+
+#by heterocystous
+nonhet = c("OSCILLATORIA", "CHROOCOCCUS", "MICROCYSTIS", "PLEUROCAPSA", "ARTHROSPIRA")
+
+CC.KM.het <- CC.KM.long %>%
+  mutate(taxa = if_else(taxa %in% nonhet, "NON-HET", "HET"))
+
+ggplot(aes(x = YEAR, y = value, fill = taxa), data = CC.KM.het) +
+  geom_col() +
+  theme_classic()
+
+#by diazotrophy, as some genera of non-heterocystous cyanos can fix N (but it isn't guaranteed they will)
+nondiaz = c("CHROOCOCCUS", "MICROCYSTIS", "PLEUROCAPSA", "ARTHROSPIRA")
+
+CC.KM.diaz <- CC.KM.long %>%
+  mutate(taxa = if_else(taxa %in% nondiaz, "1NON-DIAZ", "2DIAZ"))
+
+ggplot(aes(x = YEAR, y = value, fill = taxa), data = CC.KM.diaz) +
+  geom_col() +
+  theme_classic()
+```
+
+```{r, fig.height=10, fig.width=8}
+KM_TKN_facet <- AlumTimeseries %>%
+  filter(DOW == "62000600", parameter == "TKN.mg_L", 
+         sampleYear >= 2008 & sampleYear <= 2014) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA)
+
+KM_TP_facet <- AlumTimeseries %>%
+  filter(DOW == "62000600", parameter == "TP.mg_L", 
+         sampleYear >= 2008 & sampleYear <= 2014) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA)
+
+KM_NP <- rbind(KM_TKN_facet, KM_TP_facet) %>%
+  group_by(sampleYear, parameter) %>%
+  summarise(avg = mean(result)) %>%
+  pivot_wider(values_from = avg, names_from = parameter) %>%
+  mutate(result = TKN.mg_L/TP.mg_L,
+         taxa = NA,
+         sampleDate = NA,
+         parameter = "NP") %>%
+  select(-TKN.mg_L, -TP.mg_L)
+
+KM_CC_facet <- CC.KM.diaz %>%
+  select(-main.taxa)%>%
+  rename(sampleYear = YEAR, result = value) %>%
+  filter(sampleYear < 2015) %>%
+  mutate(sampleDate = NA, 
+         parameter = "cyano")
+  
+KM_plant_facet <- Plants_KM_max %>%
+  rename(result = norm, sampleYear = Year) %>%
+  select(-max) %>%
+  mutate(sampleDate = NA,
+         taxa = NA,
+         parameter = "plants")
+
+KM_facet <- rbind(KM_TP_facet, KM_TKN_facet, KM_CC_facet, KM_plant_facet) %>%
+  mutate(parameter = factor(parameter, c("TP.mg_L", "TKN.mg_L", "cyano", "plants")))
+
+ggplot(aes(x = sampleYear, y = result), data = KM_facet) +
+  facet_wrap(~parameter, ncol = 1, scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TP.mg_L")) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TKN.mg_L")) +
+  expand_limits(y=0)+
+  geom_col(aes(fill = taxa), data = KM_facet %>% filter(parameter == "cyano"), width = 0.8) +
+  geom_col(aes(fill = parameter), data = KM_facet %>% filter(parameter == "plants"), width = 0.8)+
+    scale_fill_manual(values = c("darkgreen","#75d054ff", "#2c728eff"))+
+  theme_classic()+
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(1, "lines"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("")
+ggsave("AlumN_Fig5.jpg")
+
+ggplot(aes(x = sampleYear, y = result), data = KM_facet) +
+  facet_wrap(~parameter, ncol = 1, scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TP.mg_L")) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TKN.mg_L")) +
+  expand_limits(y=0)+
+  geom_col(aes(fill = taxa), data = KM_facet %>% filter(parameter == "cyano"), width = 0.8) +
+  geom_col(aes(fill = parameter), data = KM_facet %>% filter(parameter == "plants"), width = 0.8)+
+    scale_fill_manual(values = c("darkgreen","#7cae00", "#f8766d","#00bfc4","#c77cff"))+
+  theme_classic()+
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(1, "lines"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("") 
+#ggsave("AlumN_Fig5d.jpg")
+
+```
+
+
+Let's also try Como...
+
+```{r}
+#wrangle data
+setwd("/Users/catherinepolik/Desktop/Desktop/Grad School/Year 1/Research/Plants")
+
+#### Read in Data ####
+Plants_CO <- read.csv("Como_Macrophytes.csv")
+
+Plants_CO_fall <- Plants_CO %>%
+  select(-lake_name, -algae, -lemna_minor, -latitude, -longitude, -spirodela_polyrrhiza) %>%
+  mutate(SURVEY_START = as.Date(parse_date_time(SURVEY_START, orders = 'ymd')),
+         potamogeton_crispus = as.numeric(potamogeton_crispus)) %>%
+  mutate(Julian = yday(SURVEY_START), 
+         Month = month(SURVEY_START), 
+         Year = year(SURVEY_START))%>%
+  filter(Month == 8 | Month == 9) %>%
+mutate(VEG = select(., ceratophyllum_demersum:najas_guadalupensis) %>% rowSums(na.rm = TRUE),
+       NO_VEG_FOUND = if_else(VEG == 0, 1, 0))
+
+Plants_CO_perc <- Plants_CO_fall %>%
+  group_by(SURVEY_START) %>%
+  summarise(n = n(), VEG_all = sum(NO_VEG_FOUND == 0)) %>%
+  mutate(perc.veg = VEG_all/n*100,
+         Year = year(SURVEY_START))
+
+#max depth of vegetation as defined as the 95th percentile of vegetated points
+Plants_CO_max <- data.frame(Year = 2018:2023,
+                            max = NA)
+
+for (i in 1:6) {
+  temp <- filter(Plants_CO_fall, Year == Plants_CO_max$Year[i] & NO_VEG_FOUND == 0) %>%
+    arrange(depth_ft)
+  
+  a <- round(dim(temp)[1]*0.95)
+  
+  if (a != 0) {
+    Plants_CO_max$max[i] <- temp$depth_ft[a]
+  }
+  
+  else{Plants_CO_max$max[i] <- NA}
+}
+
+ggplot(aes(x = Year, y = max), data = Plants_CO_max) +
+  geom_col() +
+  theme_classic()
+
+#normalize to first year of data
+Plants_CO_max$norm <- Plants_CO_max$max - mean(Plants_CO_max$max[1:2], na.rm = T)
+
+ggplot(aes(x = Year, y = norm), data = Plants_CO_max) +
+  geom_col() +
+  theme_classic()
+
+```
+
+Data wrangle some cyanos
+
+```{r}
+#All Cells
+ggplot(aes(group = as.factor(YEAR), y = ALL.CELLS), data = CellCounts.CO %>% filter(YEAR >= 2018)) +
+  geom_boxplot() +
+  theme_classic() +
+  ylab("Total Natural Units")
+
+#All Cyanos
+ggplot(aes(group = as.factor(YEAR), y = CYANOS), data = CellCounts.CO %>% filter(YEAR>= 2018)) +
+  geom_boxplot() +
+  theme_classic() +
+  ylab("Total Cyanos (NU)")
+
+#Max Cells
+CC.CO.max <- CellCounts.CO %>%
+  group_by(YEAR) %>%
+  slice(which.max(ALL.CELLS))
+
+ggplot(aes(YEAR, ALL.CELLS), data = CC.CO.max %>% filter(YEAR >= 2018) ) +
+  geom_col() +
+  theme_classic() +
+  ylab("Maximum Phyto Count (NU)")
+
+CC.CO.max <- CellCounts.CO %>%
+  filter(JULIANDAY > 182) %>%
+  group_by(YEAR) %>%
+  slice(which.max(CYANOS))
+
+ggplot(aes(YEAR, CYANOS), data = CC.CO.max %>% filter(YEAR >= 2018) ) +
+  geom_col() +
+  theme_classic() +
+  ylab("Maximum CYANO Count (NU)")
+
+#by cyano taxa (longer)
+CC.CO.long <- CC.CO.max %>%
+  select(any_of(cyanophyta), YEAR) %>%
+  pivot_longer(cols = any_of(cyanophyta), names_to = ("taxa")) %>%
+   filter(!is.na(value) & value != 0) %>%
+  mutate(main.taxa = case_when(taxa == "OSCILLATORIA" ~ "3OSCILLATORIA",
+                               taxa == "MICROCYSTIS" ~ "2MICROCYSTIS",
+                               taxa == "CHROOCOCCUS" ~ "1CHROOCOCCUS",
+                               TRUE ~ "4OTHER"),
+         main.taxa = factor(main.taxa, c("1CHROOCOCCUS", "2MICROCYSTIS", "3OSCILLATORIA", "4OTHER")))
+
+
+
+ggplot(aes(x = YEAR, y = value, fill = main.taxa), data = CC.CO.long %>% filter(YEAR >= 2018) ) +
+  geom_col() +
+  theme_classic()
+
+#by heterocystous
+nonhet = c("OSCILLATORIA", "CHROOCOCCUS", "APHANOCAPSA", "GLOEOCAPSA" , "MICROCYSTIS", "RADIOCOCCUS")
+
+CC.CO.het <- CC.CO.long %>%
+  mutate(taxa = if_else(taxa %in% nonhet, "NON-HET", "HET"))
+
+ggplot(aes(x = YEAR, y = value, fill = taxa), data = CC.CO.het %>% filter(YEAR >= 2018)) +
+  geom_col() +
+  theme_classic()
+
+#by diazotrophy, as some genera of non-heterocystous cyanos can fix N (but it isn't guaranteed they will)
+nondiaz = c("CHROOCOCCUS", "APHANOCAPSA", "MICROCYSTIS", "RADIOCOCCUS")
+
+CC.CO.diaz <- CC.CO.long %>%
+  mutate(taxa = if_else(taxa %in% nondiaz, "1NON-DIAZ", "DIAZ"))
+
+ggplot(aes(x = YEAR, y = value, fill = taxa), data = CC.CO.diaz %>% filter(YEAR >= 2018)) +
+  geom_col() +
+  theme_classic()
+```
+
+```{r, fig.height=10, fig.width=8}
+CO_TKN_facet <- AlumTimeseries %>%
+  filter(DOW == "62005500", parameter == "TKN.mg_L", 
+         sampleYear >= 2018 & sampleYear <= 2023) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA,
+         parameter = "1TKN.mg_L")
+
+CO_TP_facet <- AlumTimeseries %>%
+  filter(DOW == "62005500", parameter == "TP.mg_L", 
+         sampleYear >= 2018 & sampleYear <= 2023) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA,
+         parameter = "0TP.mg_L")
+
+#CO_NP <- rbind(CO_TKN_facet, CO_TP_facet) %>%
+#  group_by(sampleYear, parameter) %>%
+#  summarise(avg = mean(result)) %>%
+#  pivot_wider(values_from = avg, names_from = parameter) %>%
+#  mutate(result = TKN.mg_L/TP.mg_L,
+#         taxa = NA,
+#         sampleDate = NA,
+#         parameter = "NP") %>%
+#  select(-TKN.mg_L, -TP.mg_L)
+
+CO_CC_facet <- CC.CO.diaz %>%
+  select(-main.taxa)%>%
+  rename(sampleYear = YEAR, result = value) %>%
+  filter(sampleYear >= 2018) %>%
+  mutate(sampleDate = NA, 
+         parameter = "2cyano")
+  
+#CO_plant_facet <- Plants_CO_max %>%
+#  rename(result = norm, sampleYear = Year) %>%
+#  select(-max) %>%
+#  mutate(sampleDate = NA,
+#         taxa = NA,
+#         parameter = "plants")
+
+CO_plant_facet <- Plants_CO_perc %>%
+  rename(result = perc.veg, sampleYear = Year) %>%
+  select(-SURVEY_START, -n, -VEG_all) %>%
+  filter(sampleYear >= 2018) %>%
+  mutate(sampleDate = NA,
+         taxa = NA,
+         parameter = "3plants")
+
+CO_facet <- rbind(CO_TP_facet, CO_TKN_facet, CO_CC_facet, CO_plant_facet) %>%
+  mutate(parameter = factor(parameter, c("0TP.mg_L", "1TKN.mg_L", "2cyano", "3plants")))
+
+
+range_act <- c(0,100)
+range_year <- c(2018,2023)
+
+dummy <- data.frame(sampleYear = range_year, result = range_act,
+                    parameter = "3plants")
+
+
+ggplot(aes(x = sampleYear, y = result), data = CO_facet) +
+  facet_wrap(~parameter, ncol = 1, scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = CO_facet %>% filter(parameter == "0TP.mg_L")) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = CO_facet %>% filter(parameter == "1TKN.mg_L")) +
+  expand_limits(y=0)+
+  geom_col(aes(fill = taxa), data = CO_facet %>% filter(parameter == "2cyano"), width = 0.8) +
+  geom_col(aes(fill = parameter), data = CO_facet %>% filter(parameter == "3plants"), width = 0.8)+
+    scale_fill_manual(values = c("darkgreen", "#2c728eff", "#75d054ff"))+
+  geom_blank(data=dummy) + 
+  theme_classic()+
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(1, "lines"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("")
+ggsave("AlumN_FigCOMO.jpg")
+
+ggplot(aes(x = sampleYear, y = result), data = KM_facet) +
+  facet_wrap(~parameter, ncol = 1, scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TP.mg_L")) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TKN.mg_L")) +
+  expand_limits(y=0)+
+  geom_col(aes(fill = taxa), data = KM_facet %>% filter(parameter == "cyano"), width = 0.8) +
+  geom_col(aes(fill = parameter), data = KM_facet %>% filter(parameter == "plants"), width = 0.8)+
+
+    scale_fill_manual(values = c("darkgreen","#7cae00", "#f8766d","#00bfc4","#c77cff"))+
+  theme_classic()+
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(1, "lines"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("") 
+#ggsave("AlumN_Fig5d.jpg")
+
+```
+
+
+Plants and N only
+
+```{r}
+
+CO_TKN_facet <- AlumTimeseries %>%
+  filter(DOW == "62005500", parameter == "TKN.mg_L", 
+         sampleYear >= 2018 & sampleYear <= 2023) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA,
+         parameter = "1TKN.mg_L",
+         Lake = "3Como")
+
+CO_plant_facet <- Plants_CO_perc %>%
+  rename(result = perc.veg, sampleYear = Year) %>%
+  select(-SURVEY_START, -n, -VEG_all) %>%
+  filter(sampleYear >= 2018) %>%
+  mutate(sampleDate = NA,
+         taxa = NA,
+         parameter = "3plants",
+         Lake = "3Como")
+
+KM_TKN_facet <- AlumTimeseries %>%
+  filter(DOW == "62000600", parameter == "TKN.mg_L", 
+         sampleYear >= 2008 & sampleYear <= 2014) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA,
+         parameter = "1TKN.mg_L",
+         Lake = "1Kohlman")
+
+KM_plant_facet <- Plants_KM_perc %>%
+  rename(result = perc.veg) %>%
+  select(-SURVEY_START, -n, -VEG_all) %>%
+  filter(sampleYear >= 2008 & sampleYear <= 2014) %>%
+  mutate(sampleDate = NA,
+         taxa = NA,
+         parameter = "3plants",
+         Lake = "1Kohlman")
+
+BE_TKN_facet <- AlumTimeseries %>%
+  filter(DOW == "62000200", parameter == "TKN.mg_L",
+         sampleYear >= 2011 & sampleYear <= 2021) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA,
+         parameter = "1TKN.mg_L",
+         Lake = "2Bald Eagle")
+
+BE_plant_facet <- Plants_BE_perc %>%
+  rename(result = perc.veg) %>%
+  select(-SURVEY_START, -n, -VEG_all) %>%
+  filter(sampleYear >= 2011 & sampleYear <= 2021) %>%
+  mutate(sampleDate = NA,
+         taxa = NA,
+         parameter = "3plants",
+         Lake = "2Bald Eagle")
+
+Plant_facet <- rbind(CO_TKN_facet, CO_plant_facet, KM_TKN_facet, KM_plant_facet, BE_TKN_facet, BE_plant_facet) %>%
+  mutate(parameter = factor(parameter, c("1TKN.mg_L", "3plants")),
+         Lake = factor(Lake))
+
+
+range_act <- c(0,100)
+
+dummy <- data.frame(result = range_act,
+                    parameter = "3plants",
+                    Lake = "3Como",
+                    sampleYear = 2018)
+
+ggplot(aes(x = sampleYear, y = result), data = Plant_facet) +
+ facet_grid(vars(parameter), vars(Lake), scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear)), data = Plant_facet %>% filter(parameter == "1TKN.mg_L"))+
+  expand_limits(y=0)+
+  geom_col(aes(fill = parameter), data = Plant_facet %>% filter(parameter == "3plants"), width = 0.8) +
+    scale_fill_manual(values = c("darkgreen","#75d054ff", "#2c728eff"))+
+  geom_blank(data=dummy) + 
+  theme_bw()+
+  theme(strip.background = element_blank(), strip.text.x = element_blank(), 
+        axis.text.x = element_blank(), axis.ticks.x = element_blank(), strip.text.y = element_blank(),
+        panel.grid = element_blank()) +
+  ylab("") + xlab("") 
+  ggsave("AlumN_FigPlants.jpg")
+
+
+```
+
+
+McCarrons DIN
+```{r}
+setwd("/Users/catherinepolik/Desktop/Desktop/Grad School/Year 1/Research/Katie Timeseries Files/MPCA")
+
+McCarron <- read.csv("McCarron_MPCA_EQUIS_62005400.csv")
+
+MC_DIN <- McCarron %>%
+  rename(LAKENAME = stationName)%>%
+  filter(parameter == "Ammonia-nitrogen as N" |
+           parameter == "Inorganic nitrogen (nitrate and nitrite) as N") %>%
+   mutate(siteID = substr(stationId,12,14),
+         DOW = fixlakeid(substr(stationId, 1,11))) %>%
+  filter(siteID == 101) %>%
+    select(collectingOrg, gtlt, parameter, result, resultUnit, sampleDate, sampleDepthUnit,
+         sampleLowerDepth, sampleUpperDepth, stationId, LAKENAME, testMethodName, siteID, DOW) %>%
+  mutate(collectingOrg = na_if(collectingOrg, "(null)"),
+         gtlt = na_if(gtlt, "(null)"),
+         result = na_if(result, "(null)"),
+         resultUnit = na_if(resultUnit, "(null)"),
+         sampleDepthUnit = na_if(sampleDepthUnit, "(null)"),
+         sampleLowerDepth = na_if(sampleLowerDepth, "(null)"),
+         sampleUpperDepth = na_if(sampleUpperDepth, "(null)")) %>%
+  mutate(result = if_else(is.na(result) & !is.na(gtlt), "DNR", result),
+         resultUnit = if_else(result == "DNR", "mg/L", resultUnit)) %>%
+  drop_na(result, resultUnit) %>% 
+  mutate(result = as.numeric(result)) %>%
+   mutate(sampleUpperDepth = as.numeric(sampleUpperDepth),
+         sampleLowerDepth = as.numeric(sampleLowerDepth)) %>%
+  mutate(sampleUpperDepth = if_else(sampleDepthUnit == "ft", sampleUpperDepth/3.281,sampleUpperDepth),
+         sampleLowerDepth = if_else(sampleDepthUnit == "ft", sampleLowerDepth/3.281, sampleLowerDepth)) %>%
+  mutate(gtlt = case_when(is.na(gtlt)  ~ 0,
+                          gtlt == "< " ~ 1,
+                          gtlt == ">" ~ 100),
+         parameter = case_when(parameter == "Ammonia-nitrogen as N" ~ "NH4.mg_L",
+                               parameter == "Inorganic nitrogen (nitrate and nitrite) as N" ~ "NOX.mg_L")) %>%
+   #FIX DATES (it's important to do this first so dates with different formats don't separate)
+  mutate(sampleDate = as.Date(parse_date_time(sampleDate, orders = c('mdy', 'ymd')))) %>%
+  #the next line fixes the issue with R reading some dates as 2000s instead of 1900s
+  mutate(sampleDate = if_else(year(sampleDate) > 2045, 
+                              sampleDate %m-% months(12*100), sampleDate)) %>%
+  mutate(sampleYear = year(sampleDate)) %>%
+  relocate(sampleYear, .after = sampleDate) 
+
+
+DIN_Hypo <- MC_DIN %>%
+  rowwise() %>%
+  mutate(sampleDepth = mean(c(sampleUpperDepth, sampleLowerDepth),na.rm=T)) %>%
+  group_by(DOW, sampleDate, parameter) %>% 
+  slice(which.max(sampleDepth)) %>%
+  ungroup() %>%
+  filter(sampleDepth >= 10) %>%
+    select(-testMethodName, -resultUnit, -sampleUpperDepth, 
+         -sampleLowerDepth, -sampleDepthUnit, -stationId, 
+         -siteID, -collectingOrg, -sampleDepth) %>%
+  mutate(depth = "hypo")
+  
+DIN_Epi <- MC_DIN %>%
+  rowwise() %>%
+  mutate(sampleDepth = mean(c(sampleUpperDepth, sampleLowerDepth),na.rm=T)) %>%
+  group_by(DOW, sampleDate, parameter) %>% 
+  slice(which.min(sampleDepth)) %>%
+  ungroup() %>%
+  filter(sampleUpperDepth < 2) %>%
+  select(-testMethodName, -resultUnit, -sampleUpperDepth, 
+         -sampleLowerDepth, -sampleDepthUnit, -stationId, 
+         -siteID, -collectingOrg, -sampleDepth) %>%
+    mutate(depth = "epi")
+
+MCC <- rbind(DIN_Hypo, DIN_Epi)
+
+###### Analysis ---------------
+MCCAlum <- MCC %>%
+  mutate(Julian = yday(sampleDate), Month = month(sampleDate)) %>% 
+  filter(Julian >= 152 & Julian <= 258) %>%
+  filter(sampleYear >= 2000 & sampleYear <= 2012) %>%
+  mutate(treatment = if_else(sampleYear >= 2005, "post", "pre")) %>%
+  mutate(gtlt = if_else(result <= 0.009, 1, gtlt)) %>%
+  mutate(BDL = if_else(gtlt == 1, T, F)) %>%
+    mutate(log.DIN = log(result))
+
+
+library(NADA2)
+
+MC_hypo_nox <- filter(MCCAlum, depth == "hypo" & parameter == "NOX.mg_L")
+MC_hypo_nh4 <- filter(MCCAlum, depth == "hypo" & parameter == "NH4.mg_L")
+MC_epi_nox <- filter(MCCAlum, depth == "epi" & parameter == "NOX.mg_L")
+MC_epi_nh4 <- filter(MCCAlum, depth == "epi" & parameter == "NH4.mg_L")
+
+#Nitrate Epi
+cen1way(MC_epi_nox$result,
+        MC_epi_nox$BDL,
+        MC_epi_nox$treatment)
+cen_ecdf(MC_epi_nox$result, 
+         MC_epi_nox$BDL,
+         MC_epi_nox$treatment)
+cboxplot(MC_epi_nox$result, 
+         MC_epi_nox$BDL,
+         MC_epi_nox$treatment, show = T)
+
+#Ammonium Epi
+cen1way(MC_epi_nh4$result,
+        MC_epi_nh4$BDL,
+        MC_epi_nh4$treatment)
+cen_ecdf(MC_epi_nh4$result, 
+         MC_epi_nh4$BDL,
+         MC_epi_nh4$treatment)
+
+#Nitrate Hypo
+#cen1way(MC_hypo_nox$result,
+#        MC_hypo_nox$BDL,
+#        MC_hypo_nox$treatment)
+#cen_ecdf(MC_hypo_nox$result, 
+#         MC_hypo_nox$BDL,
+#         MC_hypo_nox$treatment)
+
+#Ammonium Hypo
+cen1way(MC_hypo_nh4$result,
+        MC_hypo_nh4$BDL,
+        MC_hypo_nh4$treatment)
+cen_ecdf(MC_hypo_nh4$result, 
+         MC_hypo_nh4$BDL,
+         MC_hypo_nh4$treatment)
+
+ggplot(data = MC_hypo_nh4, aes(x = as.POSIXct(sampleDate), y = result)) +
+  geom_point() +
+  ylab("Ammonium (mg N/L)") +
+  xlab("Sample Date") +
+  theme_classic() +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10))
+
+ggplot(data = MC_hypo_nox, aes(x = as.POSIXct(sampleDate), y = result)) +
+  geom_point() +
+  ylab("Nitrate+Nitrite (mg N/L)") +
+  xlab("Sample Date") +
+  theme_classic() +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10))
+
+ggplot(data = MC_epi_nh4, aes(x = as.POSIXct(sampleDate), y = result)) +
+  geom_point() +
+  ylab("Ammonium (mg N/L)") +
+  xlab("Sample Date") +
+  theme_classic() +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10))
+
+ggplot(data = MC_epi_nox, aes(x = as.POSIXct(sampleDate), y = result)) +
+  geom_point() +
+  ylab("Nitrate+Nitrite (mg N/L)") +
+  xlab("Sample Date") +
+  theme_classic() +
+  scale_x_datetime(breaks = scales::pretty_breaks(n = 10))
+
+
+#### ---------------- using original dataset instead of new import
+MC_NH4 <- AlumTimeseries %>%
+  filter(DOW == "62005400", parameter == "NH4.mg_L", 
+         sampleYear >= 2000 & sampleYear <= 2011) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA)
+
+ggplot(aes(x = sampleYear, y = result), data = MC_NH4) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = MC_NH4) +
+  expand_limits(y=0)+
+  theme_classic() +
+  ylab("Ammonium (mg N/L)")+
+  xlab("Sample Year")
+
+MC_TKN <- AlumTimeseries %>%
+  filter(DOW == "62005400", parameter == "TKN.mg_L", 
+         sampleYear >= 2000 & sampleYear <= 2011) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA)
+
+ggplot(aes(x = sampleYear, y = result), data = MC_TKN) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = MC_TKN) +
+  expand_limits(y=0)+
+  theme_classic() +
+  ylab("TKN (mg N/L)")+
+  xlab("Sample Year")
+
+MC_N <- left_join(MC_TKN %>% select(sampleDate, result), MC_NH4 %>% select(sampleDate, result), by = "sampleDate") %>%
+  rename(TKN.mg_L = result.x, NH4.mg_L = result.y) %>%
+  filter(!is.na(NH4.mg_L)) %>%
+  mutate(TON.mg_L = TKN.mg_L - NH4.mg_L) %>%
+  select(-TKN.mg_L)%>%
+  pivot_longer(cols = c(TON.mg_L, NH4.mg_L), names_to = ("parameter"))
+
+ggplot(aes(x = sampleDate, y = value), data = MC_N) +
+  geom_col(aes(fill = parameter)) +
+
+MC_TP <- AlumTimeseries %>%
+  filter(DOW == "62005400", parameter == "TP.mg_L", 
+         sampleYear >= 2000 & sampleYear <= 2011) %>%
+  select(sampleDate, sampleYear, parameter, result) %>%
+  mutate(taxa = NA)
+
+ggplot(aes(x = sampleYear, y = result), data = MC_TP) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = MC_TP) +
+  expand_limits(y=0)+
+  theme_classic() +
+  ylab("TP (mg P/L)")+
+  xlab("Sample Year")
+
+
+
+```
+
+
+
+Old code. Potentially delete when no longer needed
+```{r}
+Alum_summary <- NP_Z %>%
+  group_by(DOW.App, treatment)%>%
+  summarise(TN.avg = mean(result), TP.avg = mean(TP.mg_L), NP.avg = mean(NP), year = mean(sampleYear)) %>%
+  pivot_wider(names_from = treatment, values_from = c(TN.avg, TP.avg, NP.avg, year)) %>%
+  mutate(TN.del = TN.avg_post2 - TN.avg_pre,
+         TP.del = TP.avg_post2 - TP.avg_pre,
+         NP.del = NP.avg_post2 - NP.avg_pre) %>%
+  mutate(TN.perc = (TN.del/TN.avg_pre)*100,
+         TP.perc = (TP.del/TP.avg_pre)*100,
+         NP.perc = (NP.del/NP.avg_pre)*100) %>%
+  mutate(NP.code = case_when(NP.avg_post2 >= 40 ~ 0,
+                             NP.avg_post2 < 40 & NP.avg_pre > 20 ~1,
+                             NP.avg_post2 <= 20 ~ 2),
+         NP.code = as.factor(NP.code),
+         year_pre = as.factor(year_pre))
+
+ggplot(aes(x = TP.del, y=TN.del, color = DOW.App), data = Alum_summary) +
+  geom_point() 
+```
+
+Old code, Chla:P long term
+```{r Chla:P lake list}
+#Let's start with the set of good P data and match the chla dataset
+
+Alum_CP <- merge(Alum_TP %>% mutate(sampleDate = as.character(sampleDate)), Alum_CHLA, 
+                           by=c("DOW","sampleDate","sampleYear")) %>%
+  mutate(CP = chla.Pcorr.ug_L/TP.mg_L) %>%
+  filter(!is.na(CP)) %>%
+  filter(CP > 0 & CP < 10000) %>%
+  mutate(CP.log = log(CP))
+
+#Count years of data before and after dose date
+for(i in 1:dim(DoseDates_TP)[1]) {
+  Alum_CP_subset <- Alum_CP %>%
+    filter(DOW == DoseDates_TP$DOW[i]) %>%
+    mutate(treatment = case_when(sampleDate >= DoseDates_TP$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_TP$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_TP$Post.Upper[i] ~ "post"))
+  
+  Alum_CP_subset_2years <- filter(Alum_CP_subset, !is.na(treatment)) %>%
+    dplyr::select(sampleYear, treatment) %>%
+    distinct() %>%
+    group_by(treatment) %>%
+    summarise(n = dplyr::n(), .groups = "drop") %>%
+    arrange(treatment)
+    
+  DoseDates_TP$CP.PRE[i] <- Alum_CP_subset_2years$n[2]
+  DoseDates_TP$CP.POST[i] <- Alum_CP_subset_2years$n[1]
+}
+
+#only keep lakes that have enough data
+DoseDates_CP <- DoseDates_TP%>%
+  filter(CP.PRE == 2)
+
+```
+
+```{r, echo = FALSE}
+hist(Alum_CP$CP, xlab = "Chla:P Ratio", main = "Chla:P Ratio Frequency")
+hist(Alum_CP$CP.log, xlab = "ln(Chla:P)", main = "log transformed Chla:P Ratio Frequency")
+```
+
+```{r chla:P Z scores}
+#set up a variable to hold all the Z-scores
+CP_Z <- data.frame(DOW = NA, 
+                   sampleDate = NA, 
+                   sampleYear = NA, 
+                   TP.mg_L = NA, 
+                   gtlt.x = NA,
+                   TP.log = NA, 
+                   chla.Pcorr.ug_L = NA, 
+                   gtlt.y = NA,
+                   chla.log = NA,
+                   CP = NA,
+                   CP.log = NA,
+                   treatment = NA,
+                   DOW.App = NA,
+                   CP.Z = NA)
+
+
+for(i in 1:dim(DoseDates_CP)[1]) {
+  CP_subset_Z <- Alum_CP %>%
+    dplyr::filter(DOW == DoseDates_CP$DOW[i]) %>%
+   mutate(treatment = case_when(sampleDate >= DoseDates_CP$Pre.Lower[i] & 
+                                   sampleDate <= DoseDates_CP$Pre.Upper[i] ~ "pre",
+                                 sampleDate >= DoseDates_CP$Post.Lower[i] & 
+                                   sampleDate <= DoseDates_CP$Post.Upper[i] ~ "post2",
+                                 sampleDate >= DoseDates_CP$Post.Upper[i] & 
+                                   sampleDate <= DoseDates_CP$Post.4[i] ~ "post4",
+                                 sampleDate >= DoseDates_CP$Post.4[i] & 
+                                   sampleDate <= DoseDates_CP$Post.6[i] ~ "post6",
+                                 sampleDate >= DoseDates_CP$Post.6[i] & 
+                                   sampleDate <= DoseDates_CP$Post.8[i] ~ "post8",)) %>%
+    mutate(DOW.App = paste(DOW, DoseDates_CP$Application[i], sep = ""))
+    
+  CP_subset_Z_2years <- filter(CP_subset_Z, !is.na(treatment))
+  
+  #calculate Z-scores
+  a = mean(CP_subset_Z_2years$CP.log)
+  b = sd(CP_subset_Z_2years$CP.log)
+  CP_subset_Z_2years$CP.Z <- (CP_subset_Z_2years$CP.log - a)/b
+  
+  CP_Z <- rbind(CP_Z, CP_subset_Z_2years)
+}
+
+#remove dummy row
+CP_Z <- CP_Z[-1,]
+#order factors properly
+CP_Z$treatment <- factor(CP_Z$treatment, c("pre", "post2", "post4", "post6", "post8"))
+```
+
+
+
+```{r Chla:P Z-score plot, echo=FALSE}
+ggplot(aes(x = treatment, y = Z), data = CHLA_Z %>% filter(DOW.App == "62005400a")) +
+  geom_boxplot() +
+  geom_jitter(alpha = 0.05) +
+  theme_classic()+
+  theme(axis.ticks.x = element_blank())+
+  labs(y = "Chla:P Z-score")
+#ggsave("TN_alum_long.pdf")
+
+ggplot(aes(x = treatment, y = Z), data = TP_Z %>% filter(DOW.App == "62005400a")) +
+  geom_boxplot() +
+  geom_jitter(alpha = 0.05) +
+  theme_classic()+
+  theme(axis.ticks.x = element_blank())+
+  labs(y = "Chla:P Z-score")
+
+CP_long_model <- lmer(CP.log ~ treatment + (treatment|DOW.App), data = CP_Z)
+summary(CP_long_model)
+emmeans(CP_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+plot_model(CP_long_model, type = "re")
+
+CP_Z_long_model <- lmer(CP.Z ~ treatment + (1|DOW.App), data = CP_Z)
+summary(CP_Z_long_model)
+emmeans(CP_Z_long_model, list(pairwise ~ treatment), adjust = "tukey")
+
+randEffect<-ranef(CP_long_model)
+
+
+blups <- randEffect[["DOW.App"]]
+blups$DOW.App <- rownames(blups)
+blups$effect <- blups$`(Intercept)` + blups$treatmentpost8
+```
+
+
+
