@@ -494,6 +494,8 @@ ggplot(TP.emm, aes(x=factor(treatment), y=response,
   scale_y_continuous(expand = c(0,0), limits = c(0,0.07)) +
   scale_x_discrete(labels=c('Pre', 'Post'))
 
+ggsave("TP_BACI.jpg", path = here("Plots"))
+
 
 #plot of the actual data instead of model fits
 
@@ -524,16 +526,24 @@ summary(N_BACI_model)
 N.emm <- confint(emmeans(N_BACI_model, ~ evertreat*treatment, type = 'response'))
 
 dodge <- position_dodge(width=0.25)
-ggplot(N.emm, aes(x=factor(treatment), y=response, color=factor(evertreat), group = factor(evertreat))) + 
-  geom_point(position = dodge, show.legend = F, size = 2.5) +
-  geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
+ggplot(N.emm, aes(x=factor(treatment), y=response, 
+                  color=factor(evertreat), 
+                  group = factor(evertreat),
+                  shape = factor(evertreat))) + 
   geom_line(show.legend = F, position = dodge, linetype = "dotted") +
+  geom_point(position = dodge, show.legend = F, size = 2.5) +
+  scale_shape_manual(values=c(15,19))+
+  geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
+  scale_colour_manual(values=c("grey45", "black")) +
   theme_classic() +
   ylab("Nitrogen (mg/L)") +
   xlab("") +
   expand_limits(y = 0) +
-  scale_y_continuous(expand = c(0,0), limits = c(0,1.5))
+  scale_y_continuous(expand = c(0,0), limits = c(0,1.5)) +
+  scale_x_discrete(labels=c('Pre', 'Post'))
 
+ggsave("TKN_BACI.jpg", path = here("Plots"))
+  
 #ggplot(PrePostData %>% filter(!is.na(N.mg_L)), aes(x=factor(treatment), y=N.mg_L, fill=factor(evertreat))) + 
 #  scale_y_log10()+
 #  geom_boxplot(width = 0.4, show.legend = F) +
@@ -551,60 +561,8 @@ ggplot(N.emm, aes(x=factor(treatment), y=response, color=factor(evertreat), grou
 
 ```
 
-N BACI
-```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
-N_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(N.log)), 
-                      N.log ~ treatment*evertreat + (1|DOWApp))
-summary(N_BACI_model)
-
-boxplot(N.log~treatment+evertreat, PrePostData %>% filter(!is.na(N.log)))
-
-ggplot(PrePostData, aes(x=factor(treatment), y=N.log, fill=factor(evertreat))) + 
-    geom_boxplot(width = 0.4, show.legend = F) +
-  theme_classic()
-
-N.emm <- confint(emmeans(N_BACI_model, ~ evertreat*treatment))
-
-dodge <- position_dodge(width=0.25)
-ggplot(N.emm, aes(x=factor(treatment), y=emmean, color=factor(evertreat), group = factor(evertreat))) + 
-  geom_point(position = dodge, show.legend = F, size = 2.5) +
-  geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
-  geom_line(show.legend = F, position = dodge, linetype = "dotted") +
-  theme_classic() +
-  ylab("ln of Nitrogen (mg/L)") +
-  xlab("")
-
-```
-
-CHLA BACI
-```{r, echo=FALSE, fig.height=3, fig.width=2.5}
-
-CHLA_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(chla.log)), 
-                      chla.log ~ treatment*evertreat + (1|DOWApp))
-summary(CHLA_BACI_model)
-
-boxplot(chla.log~treatment+evertreat, PrePostData %>% filter(!is.na(chla.log)))
-
-ggplot(PrePostData, aes(x=factor(treatment), y=chla.log, fill=factor(evertreat))) + 
-    geom_boxplot(width = 0.4, show.legend = F) +
-  theme_classic()
-
-chla.emm <- confint(emmeans(CHLA_BACI_model, ~ evertreat*treatment))
-
-dodge <- position_dodge(width=0.25)
-my_y_title <- expression(paste("ln of Chlorophyll ", italic("a"), " (ug/L)"))
-ggplot(chla.emm, aes(x=factor(treatment), y=emmean, color=factor(evertreat), group = factor(evertreat))) + 
-  geom_point(position = dodge, show.legend = F, size = 2.5) +
-  geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
-  geom_line(show.legend = F, position = dodge, linetype = "dotted") +
-  theme_classic() +
-  ylab(my_y_title) +
-  xlab("")
-
-```
-
-chla BACI treating log differently
+chla BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
 CHLA_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(chla.ug_L)), 
@@ -614,30 +572,39 @@ summary(CHLA_BACI_model)
 chla.emm <- confint(emmeans(CHLA_BACI_model, ~ evertreat*treatment, type = 'response'))
 
 dodge <- position_dodge(width=0.25)
-ggplot(chla.emm, aes(x=factor(treatment), y=response, color=factor(evertreat), group = factor(evertreat))) + 
-  geom_point(position = dodge, show.legend = F, size = 2.5) +
-  geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
+my_y_title <- expression(paste("Chlorophyll ", italic("a"), " (ug/L)"))
+ggplot(chla.emm, aes(x=factor(treatment), y=response, 
+                     color=factor(evertreat), 
+                     group = factor(evertreat),
+                     shape = factor(evertreat))) + 
   geom_line(show.legend = F, position = dodge, linetype = "dotted") +
+  geom_point(position = dodge, show.legend = F, size = 2.5) +
+  scale_shape_manual(values=c(15,19))+
+  geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
+  scale_colour_manual(values=c("grey45", "black")) +
   theme_classic() +
-  ylab("Chlorophyll-a (ug/L)") +
+  ylab(my_y_title) +
   xlab("") +
   expand_limits(y = 0) +
-  scale_y_continuous(expand = c(0,0), limits = c(0,25))
+  scale_y_continuous(expand = c(0,0), limits = c(0,25)) +
+  scale_x_discrete(labels=c('Pre', 'Post'))
 
-ggplot(PrePostData %>% filter(!is.na(chla.ug_L)), aes(x=factor(treatment), y=chla.ug_L, fill=factor(evertreat))) + 
-  scale_y_log10()+
-  geom_boxplot(width = 0.4, show.legend = F) +
-  theme_classic() +
-  ylab("Chlorophyll-a (ug/L)") +
-  xlab("") +
-  stat_summary(
-    fun = median,
-    geom = 'line',
-    aes(group = factor(evertreat), color = factor(evertreat)),
-    show.legend = F,
-    position = dodge,
-    linetype = "dotted",
-    size = 1)
+ggsave("CHLA_BACI.jpg", path = here("Plots"))
+
+#ggplot(PrePostData %>% filter(!is.na(chla.ug_L)), aes(x=factor(treatment), y=chla.ug_L, fill=factor(evertreat))) + 
+#  scale_y_log10()+
+#  geom_boxplot(width = 0.4, show.legend = F) +
+#  theme_classic() +
+#  ylab("Chlorophyll-a (ug/L)") +
+#  xlab("") +
+#  stat_summary(
+#    fun = median,
+#    geom = 'line',
+#    aes(group = factor(evertreat), color = factor(evertreat)),
+#    show.legend = F,
+#    position = dodge,
+#    linetype = "dotted",
+#    size = 1)
 
 ```
 
@@ -648,24 +615,26 @@ Secchi_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(secchi.m)),
                       secchi.m ~ treatment*evertreat + (1|DOWApp))
 summary(Secchi_BACI_model)
 
-boxplot(secchi.m~treatment+evertreat, PrePostData %>% filter(!is.na(secchi.m)))
-
-ggplot(PrePostData, aes(x=factor(treatment), y=secchi.m, fill=factor(evertreat))) + 
-    geom_boxplot(width = 0.4, show.legend = F) +
-  theme_classic()
-
 secchi.emm <- confint(emmeans(Secchi_BACI_model, ~ evertreat*treatment))
 
 dodge <- position_dodge(width=0.25)
-ggplot(secchi.emm, aes(x=factor(treatment), y=emmean, color=factor(evertreat), group = factor(evertreat))) + 
-  geom_point(position = dodge, show.legend = F, size = 2.5) +
-  geom_errorbar(aes(ymax=asymp.UCL,ymin=asymp.LCL),position = dodge, show.legend = F, width  = 0.25) + 
+ggplot(secchi.emm, aes(x=factor(treatment), y=emmean, 
+                       color=factor(evertreat), 
+                       group = factor(evertreat),
+                       shape = factor(evertreat))) + 
   geom_line(show.legend = F, position = dodge, linetype = "dotted") +
+  geom_point(position = dodge, show.legend = F, size = 2.5) +
+  scale_shape_manual(values=c(15,19))+
+  geom_errorbar(aes(ymax=asymp.UCL,ymin=asymp.LCL),position = dodge, show.legend = F, width  = 0.25) + 
+  scale_colour_manual(values=c("grey45", "black")) +
   theme_classic() +
   ylab("Secchi (m)") +
   xlab("")+
   expand_limits(y = 0) +
-  scale_y_continuous(expand = c(0,0), limits = c(0,3))
+  scale_y_continuous(expand = c(0,0), limits = c(0,3)) +
+  scale_x_discrete(labels=c('Pre', 'Post'))
+
+ggsave("Secchi_BACI.jpg", path = here("Plots"))
   
 
 ```
@@ -680,30 +649,38 @@ summary(NP_BACI_model)
 np.emm <- confint(emmeans(NP_BACI_model, ~ evertreat*treatment, type = 'response'))
 
 dodge <- position_dodge(width=0.25)
-ggplot(np.emm, aes(x=factor(treatment), y=response, color=factor(evertreat), group = factor(evertreat))) + 
-  geom_point(position = dodge, show.legend = F, size = 2.5) +
-  geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
+ggplot(np.emm, aes(x=factor(treatment), y=response, 
+                   color=factor(evertreat), 
+                   group = factor(evertreat),
+                   shape = factor(evertreat))) + 
   geom_line(show.legend = F, position = dodge, linetype = "dotted") +
+  geom_point(position = dodge, show.legend = F, size = 2.5) +
+  scale_shape_manual(values=c(15,19))+
+  geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
+  scale_colour_manual(values=c("grey45", "black")) +
   theme_classic() +
-  ylab("N:P") +
+  ylab("N:TP") +
   xlab("") +
   expand_limits(y = 0) +
-  scale_y_continuous(expand = c(0,0), limits = c(25,70))
+  scale_y_continuous(expand = c(0,0), limits = c(25,70))+
+  scale_x_discrete(labels=c('Pre', 'Post'))
 
-ggplot(PrePostData %>% filter(!is.na(NP.ratio)), aes(x=factor(treatment), y=NP.ratio, fill=factor(evertreat))) + 
-  scale_y_log10()+
-  geom_boxplot(width = 0.4, show.legend = F) +
-  theme_classic() +
-  ylab("Chlorophyll-a (ug/L)") +
-  xlab("") +
-  stat_summary(
-    fun = median,
-    geom = 'line',
-    aes(group = factor(evertreat), color = factor(evertreat)),
-    show.legend = F,
-    position = dodge,
-    linetype = "dotted",
-    size = 1)
+ggsave("NP_BACI.jpg", path = here("Plots"))
+
+#ggplot(PrePostData %>% filter(!is.na(NP.ratio)), aes(x=factor(treatment), y=NP.ratio, fill=factor(evertreat))) + 
+#  scale_y_log10()+
+#  geom_boxplot(width = 0.4, show.legend = F) +
+#  theme_classic() +
+#  ylab("NP ratio") +
+#  xlab("") +
+#  stat_summary(
+#    fun = median,
+#    geom = 'line',
+#    aes(group = factor(evertreat), color = factor(evertreat)),
+#    show.legend = F,
+#    position = dodge,
+#    linetype = "dotted",
+#    size = 1)
 
 ```
 
@@ -780,6 +757,8 @@ newdat <- newdat %>%
 
 Plots!
 
+
+NOT CURRENTLY USED IN PUB
 ```{r, fig.width=3, fig.height=3}
 
 
@@ -847,6 +826,7 @@ ggplot(LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYe
 
 long term plots that include the pre data
 
+DATA PREP
 ```{r}
 preData <- PrePostData %>%
   filter(DOWApp %in% DOWLength$DOWApp) %>%
@@ -858,34 +838,17 @@ preData <- PrePostData %>%
 LongData3 <- rbind(preData, LongData2)
 ```
 
+
 ```{r, fig.width = 4, fig.height=3}
   
 yint.TP <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==1))$TP.mg_L)
 yint.TP2 <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1))$TP.mg_L)
 yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
 
-ggplot(LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1), aes(x=factor(postYear), y=TP.mg_L)) +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
-  theme_classic() +
-  ylab("Total Phosphorus (mg/L)") +
-  xlab("") +
-  geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = TP.mg_L), size = 1.2, color = "red")
-
 
 yint.N <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==1))$N.mg_L)
 yint.N2 <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1))$N.mg_L)
 yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
-
-ggplot(LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYear), y=N.mg_L)) +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  geom_hline(yintercept = yint.N3, linetype = "dashed") +
-  theme_classic() +
-  ylab("Nitrogen (mg/L)") +
-  xlab("") +
-  geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
 
 ggplot(LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1), aes(x=factor(postYear), y=TP.mg_L)) +
   scale_y_log10() +
@@ -896,6 +859,8 @@ ggplot(LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1), aes(x=factor(postY
   xlab("") 
   #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = TP.mg_L), size = 1.2, color = "red")
 
+ggsave("TP_long.jpg", path = here("Plots"))
+
 ggplot(LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYear), y=N.mg_L)) +
   scale_y_log10() +
   geom_boxplot(show.legend = F) +
@@ -904,6 +869,9 @@ ggplot(LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYe
   ylab("Nitrogen (mg/L)") +
   xlab("") 
   #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
+
+ggsave("TKN_long.jpg", path = here("Plots"))
+
 
 ```
 
