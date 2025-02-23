@@ -403,6 +403,9 @@ AllData <- rbind(AlumData, ControlData) %>%
                             is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA)) %>%
   select(-chla.Pcorr.ug_L, -chla.nonPcorr.ug_L, -gtlt_chla.Pcorr.ug_L, -gtlt_chla.nonPcorr.ug_L ) %>%
   
+  mutate(secchi.m = case_when(secchi.m == 0 ~ NA,
+                              secchi.m != 0 ~ secchi.m)) %>%
+  
   mutate(TP.log = log(TP.mg_L),
          N.log = log(N.mg_L),
          chla.log = log(chla.ug_L),
@@ -468,20 +471,27 @@ hist(log((PrePostData %>% filter(evertreat == 0 & treatment == "pre"))$NP.ratio)
 ----------------------------------
 ANALYSIS
 
+```{r}
+PrePostData <- PrePostData %>%
+  mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
+                                evertreat == 1 ~ 0)) #this is annoying but increases interpretability
+
+```
+
 TP BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
 TP_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(TP.mg_L)), 
-                      log(TP.mg_L) ~ treatment*evertreat + (1|DOWApp))
+                      log(TP.mg_L) ~ treatment*evertreat2 + (1|DOWApp))
 summary(TP_BACI_model)
 
-TP.emm <- confint(emmeans(TP_BACI_model, ~ evertreat*treatment, type = 'response'))
+TP.emm <- confint(emmeans(TP_BACI_model, ~ evertreat2*treatment, type = 'response'))
 
 dodge <- position_dodge(width=0.25)
 ggplot(TP.emm, aes(x=factor(treatment), y=response, 
-                   color=factor(evertreat), 
-                   group = factor(evertreat),
-                   shape = factor(evertreat))) + 
+                   color=factor(evertreat2), 
+                   group = factor(evertreat2),
+                   shape = factor(evertreat2))) + 
   geom_line(show.legend = F, position = dodge, linetype = "dotted") +
   geom_point(position = dodge, show.legend = F, size = 2.5) +
   scale_shape_manual(values=c(15,19))+
@@ -494,7 +504,7 @@ ggplot(TP.emm, aes(x=factor(treatment), y=response,
   scale_y_continuous(expand = c(0,0), limits = c(0,0.07)) +
   scale_x_discrete(labels=c('Pre', 'Post'))
 
-ggsave("TP_BACI.jpg", path = here("Plots"))
+#ggsave("TP_BACI.jpg", path = here("Plots"))
 
 
 #plot of the actual data instead of model fits
@@ -520,10 +530,10 @@ TKN BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
 N_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(N.mg_L)), 
-                      log(N.mg_L) ~ treatment*evertreat + (1|DOWApp))
+                      log(N.mg_L) ~ treatment*evertreat2 + (1|DOWApp))
 summary(N_BACI_model)
 
-N.emm <- confint(emmeans(N_BACI_model, ~ evertreat*treatment, type = 'response'))
+N.emm <- confint(emmeans(N_BACI_model, ~ evertreat2*treatment, type = 'response'))
 
 dodge <- position_dodge(width=0.25)
 ggplot(N.emm, aes(x=factor(treatment), y=response, 
@@ -566,7 +576,7 @@ chla BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
 CHLA_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(chla.ug_L)), 
-                      log(chla.ug_L) ~ treatment*evertreat + (1|DOWApp))
+                      log(chla.ug_L) ~ treatment*evertreat2 + (1|DOWApp))
 summary(CHLA_BACI_model)
 
 chla.emm <- confint(emmeans(CHLA_BACI_model, ~ evertreat*treatment, type = 'response'))
@@ -612,21 +622,21 @@ Secchi BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
 Secchi_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(secchi.m)), 
-                      secchi.m ~ treatment*evertreat + (1|DOWApp))
+                      secchi.m ~ treatment*evertreat2 + (1|DOWApp))
 summary(Secchi_BACI_model)
 
-secchi.emm <- confint(emmeans(Secchi_BACI_model, ~ evertreat*treatment))
+secchi.emm <- confint(emmeans(Secchi_BACI_model, ~ evertreat2*treatment))
 
 dodge <- position_dodge(width=0.25)
 ggplot(secchi.emm, aes(x=factor(treatment), y=emmean, 
-                       color=factor(evertreat), 
-                       group = factor(evertreat),
-                       shape = factor(evertreat))) + 
+                       color=factor(evertreat2), 
+                       group = factor(evertreat2),
+                       shape = factor(evertreat2))) + 
   geom_line(show.legend = F, position = dodge, linetype = "dotted") +
   geom_point(position = dodge, show.legend = F, size = 2.5) +
   scale_shape_manual(values=c(15,19))+
   geom_errorbar(aes(ymax=asymp.UCL,ymin=asymp.LCL),position = dodge, show.legend = F, width  = 0.25) + 
-  scale_colour_manual(values=c("grey45", "black")) +
+  #scale_colour_manual(values=c("grey45", "black")) +
   theme_classic() +
   ylab("Secchi (m)") +
   xlab("")+
@@ -643,7 +653,7 @@ NP BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
 NP_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(NP.ratio)), 
-                      log(NP.ratio) ~ treatment*evertreat + (1|DOWApp))
+                      log(NP.ratio) ~ treatment*evertreat2 + (1|DOWApp))
 summary(NP_BACI_model)
 
 np.emm <- confint(emmeans(NP_BACI_model, ~ evertreat*treatment, type = 'response'))
@@ -694,7 +704,7 @@ Later I might want to go through and only select final treatments or something l
 Data clean up
 How many years of data do we have for each DOWApp
 I'm going to keep lakes with 4 or more years of data. A little arbitrary, but what isn't.
-The general outcome for what is significant in the N and P models doesn't seem to change with the length of data set cutoff. A longer cut off (postYear > 5) slightly decreases the significance of the difference in slope between treated and untreated for N.
+The general outcome for what is significant in the N and P models doesn't seem to change with the length of data set cutoff. A longer cut off (postYear > 5) slightly decreases the significance of the difference in slope between treated and untreated for N but not its difference from 0 (I think? Should double check).
 
 ```{r}
 DOWLength <- LongData %>%
@@ -712,6 +722,239 @@ LongData2 <- LongData %>%
 
 Long term response models
 
+```{r}
+#BACI models
+
+TP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L)), 
+                      log(TP.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
+summary(TP_lt_model)
+
+N_lt_model <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L)), 
+                      log(N.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
+summary(N_lt_model)
+
+Secchi_lt_model <- lmer(data = LongData2 %>% filter(!is.na(secchi.m)), 
+                      secchi.m ~ postYear*evertreat2 + (1|DOWApp))
+summary(Secchi_lt_model)
+
+Chla_lt_model <- lmer(data = LongData2 %>% filter(!is.na(chla.ug_L)), 
+                      log(chla.ug_L) ~ postYear*evertreat2 + (1|DOWApp))
+summary(Chla_lt_model)
+
+NP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(NP.ratio)), 
+                      log(NP.ratio) ~ postYear*evertreat2 + (1|DOWApp))
+summary(NP_lt_model)
+
+
+```
+
+Add the PRE data for plotting
+
+DATA PREP
+```{r}
+preData <- PrePostData %>%
+  filter(DOWApp %in% DOWLength$DOWApp) %>%
+  filter(treatment == "pre") %>%
+  mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
+                                evertreat == 1 ~ 0),
+         postYear = 0) 
+
+LongData3 <- rbind(preData, LongData2)
+
+#predict for plotting ----------------------
+
+coef_P <- fixef(TP_lt_model)
+coef_N <- fixef(N_lt_model)
+coef_S <- fixef(Secchi_lt_model)
+coef_C <- fixef(Chla_lt_model)
+coef_NP <- fixef(NP_lt_model)
+
+newdat <- data.frame(evertreat = c(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1), 
+                     postYear = c(seq(1, 8, 1),seq(1, 8, 1)),
+                     evertreat2 = c(1, 1, 1, 1, 1, 1, 1, 1,0, 0, 0, 0, 0, 0, 0, 0))
+
+newdat <- newdat %>%
+  mutate(TP.log = coef_P[1] + postYear*coef_P[2] + evertreat2*coef_P[3] + postYear*evertreat2*coef_P[4],
+         TP.mg_L = exp(TP.log),
+         N.log = coef_N[1] + postYear*coef_N[2] + evertreat2*coef_N[3] + postYear*evertreat2*coef_N[4],
+         N.mg_L = exp(N.log),
+         chla.log = coef_C[1] + postYear*coef_C[2] + evertreat2*coef_C[3] + postYear*evertreat2*coef_C[4],
+         chla.ug_L = exp(chla.log),
+         secchi.m = coef_S[1] + postYear*coef_S[2] + evertreat2*coef_S[3] + postYear*evertreat2*coef_S[4],
+         NP.log = coef_NP[1] + postYear*coef_NP[2] + evertreat2*coef_NP[3] + postYear*evertreat2*coef_NP[4],
+         NP.ratio = exp(NP.log))
+
+newdat[nrow(newdat) + 1,] = c(0,0,1,NA,NA,NA,NA,NA,NA,NA,NA,NA)
+newdat[nrow(newdat) + 1,] = c(1,0,0,NA,NA,NA,NA,NA,NA,NA,NA,NA)
+
+#median lines for plots
+
+yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
+yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
+yint.S3 <- median((LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1 & postYear ==0))$secchi.m)
+yint.C3 <- median((LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1 & postYear ==0))$chla.ug_L)
+yint.NP3 <- median((LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1 & postYear ==0))$NP.ratio)
+```
+
+
+BACI plots
+
+```{r, fig.width = 4, fig.height=3}
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = TP.mg_L),
+            show.legend = F,
+            size = 0.9) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(TP.mg_L)), 
+               aes(x=factor(postYear), y=TP.mg_L, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+  ylab("Total Phosphorus (mg/L)") +
+  xlab("") 
+ggsave("TP_lt_BACI.jpg", path = here("Plots"))
+
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.N3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = N.mg_L),
+            show.legend = F,
+            size = 0.9) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(N.mg_L)), 
+               aes(x=factor(postYear), y=N.mg_L, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+  ylab("Total Nitrogen (mg/L)") +
+  xlab("") 
+
+ggsave("TKN_lt_BACI.jpg", path = here("Plots"))
+
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.C3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = chla.ug_L),
+            show.legend = F,
+            size = 0.9) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(chla.ug_L)), 
+               aes(x=factor(postYear), y=chla.ug_L, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+  ylab("Chlorophyll a (ug/L)") +
+  xlab("") 
+
+ggsave("Chla_lt_BACI.jpg", path = here("Plots"))
+
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.NP3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = NP.ratio),
+            show.legend = F,
+            size = 0.9) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(NP.ratio)), 
+               aes(x=factor(postYear), y=NP.ratio, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+  ylab("TN:TP") +
+  xlab("") 
+
+ggsave("NP_lt_BACI.jpg", path = here("Plots"))
+
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.S3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = secchi.m),
+            show.legend = F,
+            size = 0.9) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(secchi.m)), 
+               aes(x=factor(postYear), y=secchi.m, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+  ylab("Secchi Depth (m)") +
+  xlab("") 
+
+ggsave("Secchi_lt_BACI.jpg", path = here("Plots"))
+
+```
+
+Longterm plots without the control lakes
+
+```{r, fig.width = 4, fig.height=3}
+  
+yint.TP <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==1))$TP.mg_L)
+yint.TP2 <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1))$TP.mg_L)
+yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
+
+
+yint.N <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==1))$N.mg_L)
+yint.N2 <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1))$N.mg_L)
+yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
+
+ggplot(LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1), aes(x=factor(postYear), y=TP.mg_L)) +
+  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
+  scale_y_log10() +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("Total Phosphorus (mg/L)") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = TP.mg_L), size = 1.2, color = "red")
+
+ggsave("TP_long.jpg", path = here("Plots"))
+
+ggplot(LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYear), y=N.mg_L)) +
+  geom_hline(yintercept = yint.N3, linetype = "dashed") +
+  scale_y_log10() +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("Nitrogen (mg/L)") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
+
+ggsave("TKN_long.jpg", path = here("Plots"))
+
+
+yint.S3 <- median((LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1 & postYear ==0))$secchi.m)
+ggplot(LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1), aes(x=factor(postYear), y=secchi.m)) +
+  #scale_y_log10() +
+  geom_hline(yintercept = yint.S3, linetype = "dashed") +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("Secchi (m)") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
+ggsave("Secchi_long.jpg", path = here("Plots"))
+
+yint.C3 <- median((LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1 & postYear ==0))$chla.ug_L)
+ggplot(LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1), aes(x=factor(postYear), y=chla.ug_L)) +
+  scale_y_log10() +
+  geom_hline(yintercept = yint.C3, linetype = "dashed") +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("Chlorophyll a (ug/L)") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
+ggsave("Chla_long.jpg", path = here("Plots"))
+
+yint.NP3 <- median((LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1 & postYear ==0))$NP.ratio)
+ggplot(LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1), aes(x=factor(postYear), y=NP.ratio)) +
+  scale_y_log10() +
+  geom_hline(yintercept = yint.NP3, linetype = "dashed") +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("N:P") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
+ggsave("NP_long.jpg", path = here("Plots"))
+
+```
+
+
+
+old code, not currently used in paper
 ```{r}
 TP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L)), 
                       log(TP.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
@@ -732,33 +975,11 @@ N_treat_model <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L) & evertreat == 
 
 summary(N_lt_model)
 
-#summary(N_treat_model)
-
-
-#predict for plotting ----------------------
-
-coef_P <- fixef(TP_lt_model)
-coef_N <- fixef(N_lt_model)
-
-newdat <- data.frame(evertreat = c(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1), 
-                     postYear = c(seq(1, 8, 1),seq(1, 8, 1)),
-                     evertreat2 = c(1, 1, 1, 1, 1, 1, 1, 1,0, 0, 0, 0, 0, 0, 0, 0))
-
-newdat <- newdat %>%
-  mutate(TP.log = coef_P[1] + postYear*coef_P[2] + evertreat2*coef_P[3] + postYear*evertreat2*coef_P[4],
-         TP.mg_L = exp(TP.log),
-         N.log = coef_N[1] + postYear*coef_N[2] + evertreat2*coef_N[3] + postYear*evertreat2*coef_N[4],
-         N.mg_L = exp(N.log))
-
 
 ```
 
 
-
-Plots!
-
-
-NOT CURRENTLY USED IN PUB
+old code, not currently used in paper
 ```{r, fig.width=3, fig.height=3}
 
 
@@ -789,6 +1010,9 @@ ggplot(LongData2 %>% filter(!is.na(N.mg_L)), aes(x=factor(postYear), y=N.mg_L, f
   geom_line(data = newdat, 
             aes(group = evertreat, color = factor(evertreat), x = postYear, y = N.mg_L),
             show.legend = F)
+
+#------------------------------------
+# with pre data
 
 
 # --------------------------------
@@ -824,56 +1048,7 @@ ggplot(LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYe
 
 ```
 
-long term plots that include the pre data
 
-DATA PREP
-```{r}
-preData <- PrePostData %>%
-  filter(DOWApp %in% DOWLength$DOWApp) %>%
-  filter(treatment == "pre") %>%
-  mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
-                                evertreat == 1 ~ 0),
-         postYear = 0) 
-
-LongData3 <- rbind(preData, LongData2)
-```
-
-
-```{r, fig.width = 4, fig.height=3}
-  
-yint.TP <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==1))$TP.mg_L)
-yint.TP2 <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1))$TP.mg_L)
-yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
-
-
-yint.N <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==1))$N.mg_L)
-yint.N2 <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1))$N.mg_L)
-yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
-
-ggplot(LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1), aes(x=factor(postYear), y=TP.mg_L)) +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
-  theme_classic() +
-  ylab("Total Phosphorus (mg/L)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = TP.mg_L), size = 1.2, color = "red")
-
-ggsave("TP_long.jpg", path = here("Plots"))
-
-ggplot(LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYear), y=N.mg_L)) +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  geom_hline(yintercept = yint.N3, linetype = "dashed") +
-  theme_classic() +
-  ylab("Nitrogen (mg/L)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
-
-ggsave("TKN_long.jpg", path = here("Plots"))
-
-
-```
 
 ---------------------------------------------------------
 NOX!!!
@@ -891,7 +1066,7 @@ hist(NOX_BDL$NOX.mg_L)
 NOX %>% group_by(evertreat) %>% summarise(BDL = sum(gtlt_NOX.mg_L > 0), total = n())
 
 #how much is < 0.03, the most common detection limit
-NOX %>% group_by(evertreat) %>% summarise(BDL = sum(NOX.mg_L <= 0.03 | gtlt_NOX.mg_L > 0), total = n())
+NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(NOX.mg_L <= 0.03 | gtlt_NOX.mg_L > 0), total = n())
 
 #585/647 or ~90% is probably BDL
 
@@ -913,7 +1088,7 @@ NOX3 <- NOX2 %>% filter(NOX.frac >= 0.05)
 -------------------------------------------
 COMPARING CHANGE IN N AND P
 
-```{r}
+```{r, fig.width = 4, fig.height = 3}
 PrePost_Summary <- PrePostData %>%
   filter(evertreat == 1) %>%
   group_by(DOWApp, treatment) %>%
@@ -934,14 +1109,20 @@ PrePost_Molar <- PrePostData %>%
   filter(evertreat == 1) %>%
   group_by(DOWApp, treatment) %>%
   summarise(TP = mean(TP.mg_L, na.rm = T), TN = mean(N.mg_L, na.rm = T)) %>%
-  mutate(TP.mol = TP/30.974,
-         TN.mol = TN/14.007,
-         NP.mol = TN.mol/TP.mol) %>%
+  mutate(TP.mol = (TP/30.974)*1000,
+         TN.mol = (TN/14.007)*1000,
+         NP.mol = TN.mol/TP.mol) 
   
   
 test <- lm(data = PrePost_Summary %>% filter(TN.delmol != "NaN"), TN.delmol ~ TP.delmol)
 summary(test) #shows that in each lake you lose about 20 mol N per mol P, close to expected for biomass in lake
-  
+
+abs.change <- lm(data = PrePost_Summary %>% filter(TN_del != "NaN"), TN_del ~ TP_del)
+perc.change <- lm(data = PrePost_Summary %>% filter(TN_perc != "NaN"), TN_perc ~ TP_perc)
+summary(perc.change)
+summary(abs.change)
+
+  plot(perc.change)
   
   
   
@@ -951,9 +1132,20 @@ summary(test) #shows that in each lake you lose about 20 mol N per mol P, close 
 ggplot(PrePost_Summary %>% filter(TN_del != "NaN"), aes(x = TP_del, y = TN_del)) +
   geom_point() +
   theme_classic() +
-  geom_hline(yintercept = 0) +
-  geom_vline(xintercept = 0) +
-  geom_smooth(method = "lm")
+  geom_hline(yintercept = 0, lty = "dashed") +
+  geom_vline(xintercept = 0, lty = "dashed") +
+  geom_smooth(method = "lm", se = F, color = "black") +
+  xlab("Change in TP (mg P/L)") + 
+  ylab("Change in TKN (mg N/L)")
+
+ggsave("Abs_Change.jpg", path = here("Plots"))
+
+ggplot(PrePost_Summary %>% filter(TN_del != "NaN"), aes(x = TP.delmol, y = TN.delmol)) +
+  geom_point() +
+  theme_classic() +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  geom_vline(xintercept = 0, lty = "dashed") +
+  geom_smooth(method = "lm", se = F, color = "black")
 
 ggplot(PrePost_Summary %>% filter(TN_perc != "NaN"), aes(x = TP_perc, y = TN_perc)) +
   coord_equal() +
@@ -961,9 +1153,11 @@ ggplot(PrePost_Summary %>% filter(TN_perc != "NaN"), aes(x = TP_perc, y = TN_per
   theme_classic() +
   geom_hline(yintercept = 0, lty = "dashed") +
   geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", color = "red", se = F)  +
-  xlab("% change in P") + 
-  ylab("% change in N")
+  geom_smooth(method = "lm", color = "black", se = F)  +
+  xlab("Percent Change in TP") + 
+  ylab("Percent Change in TKN")
+
+ggsave("Perc_Change.jpg", path = here("Plots"))
 
 ggplot(PrePost_Molar %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
   coord_equal() +
@@ -975,12 +1169,16 @@ ggplot(PrePost_Molar %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
   theme_classic()
            
 #plot with molar ratios
-a = c(0.001,0.01)
-b = c(0.02,0.2)
+#a = c(0.001,0.01)
+#b = c(0.02,0.2)
+a = c(1,10)
+b = c(20,200)
 Hecky_low <- data.frame(a, b)
 
-c = c(0.0005,0.01)
-d = c(0.025,0.5)
+#c = c(0.0005,0.01)
+#d = c(0.025,0.5)
+c = c(0.5,10)
+d = c(25,500)
 Hecky_high <- data.frame(c, d)
 
 ggplot(PrePost_Molar %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
@@ -991,11 +1189,48 @@ ggplot(PrePost_Molar %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
   scale_shape_manual(values = c(21, 19)) + 
   geom_line(data = Hecky_low, aes(x = a, y = b)) +
   geom_line(data = Hecky_high, aes(x = c, y = d))+
-  theme_classic() 
+  theme_classic() +
+   xlab("TP (umol/L)") + 
+  ylab("TKN (umol/L)")
 
+ggsave("NP_Shift.jpg", path = here("Plots"))
+
+
+#test change in N:P
+PrePost_Molar_wide <- PrePost_Molar %>%
+  select(DOWApp, treatment, NP.mol) %>%
+  pivot_wider(names_from = treatment, values_from = NP.mol) %>%
+  filter(pre != "NaN")
+
+t.test(PrePost_Molar_wide$pre, PrePost_Molar_wide$post, paired = TRUE, alternative = "two.sided")
+mean(PrePost_Molar_wide$pre)
+mean(PrePost_Molar_wide$post)
+sum(PrePost_Molar_wide$pre > 50)/46*100
+sum(PrePost_Molar_wide$post > 50)/46*100
 
 
 ```
+
+Let's pull out specific lakes
+
+```{r}
+ggplot(PrePost_Summary %>% filter(TN_perc != "NaN"), aes(x = TP_perc, y = TN_perc)) +
+  coord_equal() +
+  geom_point() +
+  theme_classic() +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  geom_vline(xintercept = 0, lty = "dashed") +
+  geom_smooth(method = "lm", color = "black", se = F)  +
+  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62000600a"), color = "red", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62005500a"), color = "red", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62000200a"), color = "red", shape = 1, cex = 3.5) +
+  xlab("Percent Change in TP") + 
+  ylab("Percent Change in TKN")
+
+```
+
+
+
 
 --------------------------------------------
 Add in watershed and lake morphometry parameters
@@ -1003,11 +1238,13 @@ Add in watershed and lake morphometry parameters
 basically nothing is significant. I maybe should log transform some of these variables.
 I wonder if I can get % littoral?
 
-```{r}
+```{r, fig.width=7, fig.height=4}
 PrePost_WS <- PrePost_Summary %>%
   mutate(DOW = substr(DOWApp, start = 1, stop = 8))
   
 PrePost_WS <- left_join(PrePost_WS, LakeList, by = "DOW")
+
+PrePost_WS_long <- gather(PrePost_WS, key="param", value="value", c("AvgDepth.m", "WS.Lake"))
 
 #per models
 TP.depth <- lm(data = PrePost_WS, TP_del ~ AvgDepth.m) #NS
@@ -1016,49 +1253,286 @@ TP.WS <- lm(data = PrePost_WS, TP_del ~ WS.Lake) #NS
 TN.WS <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_perc ~ WS.Lake) #p = 0.0645
 
 
-ggplot(PrePost_WS %>% filter(TN_del != "NaN"), aes(x = AvgDepth.m, y = TP_del)) +
+
+ggplot(PrePost_WS_long %>% filter(TN_del != "NaN"), aes(x = value, y = TP_del)) +
+  facet_wrap(~param, scales = "free",
+             strip.position = "bottom", 
+                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
   geom_point() +
   theme_classic() +
-  geom_smooth(method = "lm")
+  theme(strip.background = element_blank(),
+           strip.placement = "outside") +
+  geom_smooth(method = "lm", se = F, color = "black") +
+  ylab("Change in TP (mg/L)") +
+  xlab("")
 
-ggplot(PrePost_WS %>% filter(TN_del != "NaN"), aes(x = AvgDepth.m, y = TP_perc)) +
+ggsave("Morph_TPabs.jpg", path = here("Plots"))
+
+ggplot(PrePost_WS_long %>% filter(TN_del != "NaN"), aes(x = value, y = TP_perc)) +
+  facet_wrap(~param, scales = "free",
+             strip.position = "bottom", 
+                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
   geom_point() +
   theme_classic() +
-  geom_smooth(method = "lm")
+  theme(strip.background = element_blank(),
+           strip.placement = "outside") +
+  geom_smooth(method = "lm", se = F, color = "black") +
+  ylab("Percent Change in TP") +
+  xlab("")
+ggsave("Morph_TPperc.jpg", path = here("Plots"))
 
-ggplot(PrePost_WS %>% filter(TN_del != "NaN"), aes(x = AvgDepth.m, y = TN_del)) +
+ggplot(PrePost_WS_long %>% filter(TN_del != "NaN"), aes(x = value, y = TN_del)) +
+  facet_wrap(~param, scales = "free",
+             strip.position = "bottom", 
+                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
   geom_point() +
   theme_classic() +
-  geom_smooth(method = "lm")
+  theme(strip.background = element_blank(),
+           strip.placement = "outside") +
+  geom_smooth(method = "lm", se = F, color = "black") +
+  ylab("Change in TKN (mg/L)") +
+  xlab("")
 
-ggplot(PrePost_WS %>% filter(TN_del != "NaN"), aes(x = AvgDepth.m, y = TN_perc)) +
+ggsave("Morph_TKNabs.jpg", path = here("Plots"))
+
+ggplot(PrePost_WS_long %>% filter(TN_del != "NaN"), aes(x = value, y = TN_perc)) +
+  facet_wrap(~param, scales = "free",
+             strip.position = "bottom", 
+                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
   geom_point() +
   theme_classic() +
-  geom_smooth(method = "lm")
+  theme(strip.background = element_blank(),
+           strip.placement = "outside") +
+  geom_smooth(method = "lm", se = F, color = "black") +
+  ylab("Percent Change in TKN") +
+  xlab("")
+
+ggsave("Morph_TKNperc.jpg", path = here("Plots"))
 
 
 
-ggplot(PrePost_WS %>% filter(TN_del != "NaN"), aes(x = WS.Lake, y = TP_del)) +
-  geom_point() +
-  theme_classic() +
-  geom_smooth(method = "lm")
+```
 
-ggplot(PrePost_WS %>% filter(TN_del != "NaN"), aes(x = WS.Lake, y = TP_perc)) +
-  geom_point() +
-  theme_classic() +
-  geom_smooth(method = "lm")
+Case study! Looking at Kohlman and Como plants
 
-ggplot(PrePost_WS %>% filter(TN_del != "NaN"), aes(x = WS.Lake, y = TN_del)) +
-  geom_point() +
-  theme_classic() +
-  geom_smooth(method = "lm")
+```{r}
 
-ggplot(PrePost_WS %>% filter(TN_del != "NaN"), aes(x = WS.Lake, y = TN_perc)) +
-  geom_point() +
-  theme_classic() +
-  geom_smooth(method = "lm")
+#### Read in Data ####
+Plants_CO <- read.csv(here("Data/Como_Macrophytes.csv"))
+Plants_KM <- read.csv(here("Data/Kohlman_Macrophytes.csv"))
 
-plot(TP.WS)
+Plants_CO_fall <- Plants_CO %>%
+  select(-lake_name, -algae, -lemna_minor, -latitude, -longitude, -spirodela_polyrrhiza) %>%
+  mutate(SURVEY_START = as.Date(parse_date_time(SURVEY_START, orders = 'ymd')),
+         potamogeton_crispus = as.numeric(potamogeton_crispus)) %>%
+  mutate(Julian = yday(SURVEY_START), 
+         Month = month(SURVEY_START), 
+         Year = year(SURVEY_START))%>%
+  filter(Month == 8 | Month == 9) %>%
+mutate(VEG = select(., ceratophyllum_demersum:najas_guadalupensis) %>% rowSums(na.rm = TRUE),
+       NO_VEG_FOUND = if_else(VEG == 0, 1, 0))
+
+Plants_CO_perc <- Plants_CO_fall %>%
+  group_by(SURVEY_START) %>%
+  summarise(n = n(), VEG_all = sum(NO_VEG_FOUND == 0)) %>%
+  mutate(perc.veg = VEG_all/n*100,
+         Year = year(SURVEY_START))
+
+#max depth of vegetation as defined as the 95th percentile of vegetated points
+Plants_CO_max <- data.frame(Year = 2015:2023,
+                            max = NA)
+
+for (i in 1:9) {
+  temp <- filter(Plants_CO_fall, Year == Plants_CO_max$Year[i] & NO_VEG_FOUND == 0) %>%
+    arrange(depth_ft)
+  
+  a <- round(dim(temp)[1]*0.95)
+  
+  if (a != 0) {
+    Plants_CO_max$max[i] <- temp$depth_ft[a]
+  }
+  
+  else{Plants_CO_max$max[i] <- NA}
+}
+
+ggplot(aes(x = Year, y = max), data = Plants_CO_max) +
+  geom_col() +
+  theme_classic()
+
+#normalize to first year of data
+Plants_CO_max$norm <- Plants_CO_max$max - mean(Plants_CO_max$max[4:5], na.rm = T)
+
+ggplot(aes(x = Year, y = norm), data = Plants_CO_max) +
+  geom_col() +
+  theme_classic()
+
+
+Plants_KM_fall <- Plants_KM %>%
+  select(-lake_name, -algae, -wolffia_sp, -unk_sp, -algae.1, -wolffia_columbiana, -lemna_minor,
+         -lemna_trisulca, -spirodela_polyrrhiza, -spirodela_polyrrhiza.1, -no_veg_found, -latitude, -longitude,
+         -substrate) %>%
+  mutate(SURVEY_START = as.Date(parse_date_time(SURVEY_START, orders = 'ymd'))) %>%
+  mutate(Julian = yday(SURVEY_START), 
+         Month = month(SURVEY_START), 
+         Year = year(SURVEY_START))%>%
+  filter(Month == 8 | Month == 9) %>%
+mutate(VEG = select(., ceratophyllum_demersum:potamogeton_sp.1) %>% rowSums(na.rm = TRUE),
+       NO_VEG_FOUND = if_else(VEG == 0, 1, 0))
+
+Plants_KM_perc <- Plants_KM_fall %>%
+  group_by(SURVEY_START) %>%
+  summarise(n = n(), VEG_all = sum(NO_VEG_FOUND == 0)) %>%
+  mutate(perc.veg = VEG_all/n*100,
+         sampleYear = year(SURVEY_START))
+
+#max depth of vegetation as defined as the 95th percentile of vegetated points
+Plants_KM_max <- data.frame(Year = 2001:2014,
+                            max = NA)
+
+for (i in 1:14) {
+  temp <- filter(Plants_KM_fall, Year == Plants_KM_max$Year[i] & NO_VEG_FOUND == 0) %>%
+    arrange(depth_ft)
+  
+  a <- round(dim(temp)[1]*0.95)
+  
+  if (a != 0) {
+    Plants_KM_max$max[i] <- temp$depth_ft[a]
+  }
+  
+  else{Plants_KM_max$max[i] <- NA}
+}
+
+ggplot(aes(x = Year, y = max), data = Plants_KM_max) +
+  geom_col() +
+  theme_classic()
+
+#normalize to first year of data
+Plants_KM_max$norm <- Plants_KM_max$max - mean(Plants_KM_max$max[8:9], na.rm = T)
+
+ggplot(aes(x = Year, y = norm), data = Plants_KM_max) +
+  geom_col() +
+  theme_classic()
+
+```
+
+make some plots 
+```{r}
+
+#proportion vegetated at intermediate depths
+CO_mid <- Plants_CO_fall %>%
+  filter(depth_ft <= 11 & depth_ft >= 5)%>%
+  group_by(SURVEY_START, Year) %>%
+  summarise(n = n(), NO_PLANT = sum(NO_VEG_FOUND)) %>%
+  mutate(prop.veg = 1 - (NO_PLANT / n),
+         Year = as.factor(Year))
+
+ggplot(aes(x = Year, y = prop.veg), data = BE_mid) +
+  geom_col() +
+  theme_classic()
+
+
+```
+
+
+
+Try to combine WQ and plant
+
+```{r, fig.height=7, fig.width=4}
+CO_TKN_facet <- Timeseries %>%
+  filter(parameter == "TKN.mg_L" & DOW == "62005500") %>%
+  filter(sampleYear >= 2018 & sampleYear <= 2023) %>%
+  select(sampleDate, sampleYear, parameter, result)
+  
+CO_TP_facet <- Timeseries %>%
+  filter(parameter == "TP.mg_L" & DOW == "62005500") %>%
+  filter(sampleYear >= 2018 & sampleYear <= 2023) %>%
+  select(sampleDate, sampleYear, parameter, result)
+
+#CO_Secchi_facet <- Timeseries %>%
+#  filter(parameter == "secchi.m" & DOW == "62005500") %>%
+#  filter(sampleYear >= 2016 & sampleYear <= 2023) %>%
+#  select(sampleDate, sampleYear, parameter, result)
+
+#CO_chla_facet <- Timeseries %>%
+#  filter(parameter == "chla.Pcorr.ug_L" & DOW == "62005500") %>%
+#  filter(sampleYear >= 2016 & sampleYear <= 2023) %>%
+#  select(sampleDate, sampleYear, parameter, result)
+  
+CO_plant_facet <- Plants_CO_perc %>%
+  rename(result = perc.veg, sampleYear = Year) %>%
+  filter(sampleYear >= 2018) %>%
+  select(-SURVEY_START, -n, -VEG_all) %>%
+  mutate(sampleDate = NA,
+         parameter = "plants")
+
+CO_facet <- rbind(CO_TP_facet, CO_TKN_facet, CO_plant_facet) %>%
+  mutate(parameter = factor(parameter, c("TP.mg_L","TKN.mg_L", "plants"))) %>%
+  mutate(y_max = case_when(parameter == "TKN.mg_L" ~ 3,
+                            parameter == "TP.mg_L" ~ 0.3,
+                           parameter == "plants" ~ 100)) %>%
+   mutate(y_min = case_when(parameter == "TKN.mg_L" ~ 0,
+                            parameter == "TP.mg_L" ~ 0))
+
+ggplot(aes(x = sampleYear, y = result), data = CO_facet) +
+  facet_wrap(~parameter, ncol = 1, scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = CO_facet %>% filter(parameter == "TP.mg_L")) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = CO_facet %>% filter(parameter == "TKN.mg_L")) +
+  expand_limits(y=0)+
+  geom_col(data = CO_facet %>% filter(parameter == "plants"), width = 0.8, fill = "darkgreen")+
+  theme_classic()+
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(1, "lines"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("") +
+  geom_blank(aes(y = y_max)) +
+  geom_blank(aes(y = y_min))
+ggsave("CO_perc.jpg", path = here("Plots"))
+
+
+```
+
+
+```{r, fig.height=7, fig.width=4}
+KM_TKN_facet <- Timeseries %>%
+  filter(parameter == "TKN.mg_L" & DOW == "62000600") %>%
+  filter(sampleYear >= 2008 & sampleYear <= 2013) %>%
+  select(sampleDate, sampleYear, parameter, result)
+  
+KM_TP_facet <- Timeseries %>%
+  filter(parameter == "TP.mg_L" & DOW == "62000600") %>%
+  filter(sampleYear >= 2008 & sampleYear <= 2013) %>%
+  select(sampleDate, sampleYear, parameter, result)
+  
+KM_plant_facet <- Plants_KM_perc %>%
+  rename(result = perc.veg) %>%
+  filter(sampleYear >= 2008 & sampleYear <= 2013) %>%
+  select(-SURVEY_START, -n, -VEG_all) %>%
+  mutate(sampleDate = NA,
+         parameter = "plants")
+
+KM_facet <- rbind(KM_TP_facet, KM_TKN_facet, KM_plant_facet) %>%
+  mutate(parameter = factor(parameter, c("TP.mg_L","TKN.mg_L", "plants"))) %>%
+  mutate(y_max = case_when(parameter == "TKN.mg_L" ~ 3,
+                            parameter == "TP.mg_L" ~ 0.3,
+                           parameter == "plants" ~ 100)) %>%
+  mutate(y_min = case_when(parameter == "TKN.mg_L" ~ 0,
+                            parameter == "TP.mg_L" ~ 0))
+
+ggplot(aes(x = sampleYear, y = result), data = KM_facet) +
+  facet_wrap(~parameter, ncol = 1, scales = "free") +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TP.mg_L")) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TKN.mg_L")) +
+  expand_limits(y=0)+
+  geom_col(data = KM_facet %>% filter(parameter == "plants"), width = 0.8, fill = "darkgreen")+
+  theme_classic()+
+  theme(strip.background = element_blank(),strip.text.x = element_blank(),
+        panel.spacing.y = unit(1, "lines"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  ylab("") +
+  geom_blank(aes(y = y_max)) +
+  geom_blank(aes(y = y_min)) 
+ggsave("KM_perc.jpg", path = here("Plots"))
+
 
 ```
 
@@ -1104,8 +1578,6 @@ TP_BACI_model_v2 <- lmer(TP.log ~ treatment + (1|DOW.App) , data = TP_treated)
 summary(TP_BACI_model_v2)
 
 ```
-
-
 
 
 Notes on BACI lake selection:
