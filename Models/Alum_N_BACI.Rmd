@@ -22,12 +22,12 @@ select <- dplyr::select #if you happen to have MASS loaded you need to reassign 
 
 ## Alum Lakes
 
-The following is a list of alum treatments used in this analysis. These treatments have at least 2 years of TP monitoring data in the 5 years preceding the treatment (and the same for following the treatment). A comma between dates indicate that the treatments are handled as separate events for this analysis; a slash indicates they are handled as one event.
+The following is a list of alum treatments used in this analysis. A comma between dates indicate that the treatments are handled as separate events for this analysis; a slash indicates they are handled as one event.
 
 
 ```{r Alum Lakes}
 #load in alum treated lakes
-LakeList <- read.csv(here("Data/Alum_Lakes_Table.csv")) %>%
+LakeList <- read.csv(here("Data/Alum_Lakes_Table_v2.csv")) %>%
   mutate(DOW = fixlakeid(DOW))%>%
   arrange(Year)
 
@@ -38,24 +38,19 @@ kable(LakeList %>% select (Name, AvgDepth.m, DOW, Year))
 
 Only data from June 1 - Sept 15 are included.
 
-Pre-treatment window is defined as the 2 summers before the alum treatment. If data was not available for the years directly preceding the treatment, the next temporally closest year was used.
-
-Post-treatment window is defined as the 2 summers after the alum treatment. If data was not available for the years directly following the treatment, the next temporally closest year was used.
-
 Treatments that happen with at least 4 summers in between are analysed as separate treatments. Treatments with 3 or fewer summers in between are analysed as one treatment, omitting the data in between the two applications. In these cases, the pre-treatment window ends when the first dose was applied and the post-treatment window begins when the second dose was applied.
 
 
 ```{r, echo = FALSE}
 #import time series data
-setwd("/Users/catherinepolik/Desktop/Desktop/Grad School/Year 1/Research/Katie Timeseries Files/Outputs")
-Timeseries <- read.csv("Timeseries_v6.csv") %>%
+Timeseries <- read.csv(here("Data/Timeseries_v6.csv")) %>%
   mutate(DOW = fixlakeid(DOW)) %>%
   filter(Julian >= 152 & Julian <= 258) #Jun 1 to Sept 15 window
 ```
 
 ```{r, echo = FALSE}
 #load in alum dose dates
-DoseDates <- read.csv(here("Data/Alum_Dose_Dates_forpub_v2.csv")) %>%
+DoseDates <- read.csv(here("Data/Alum_Dose_Dates_forpub_v3.csv")) %>%
   mutate(DOW = fixlakeid(DOW),
          Pre.Lower = mdy(Pre.Lower), 
          Pre.Upper = mdy(Pre.Upper), 
@@ -67,8 +62,6 @@ parameters <- c("TP.mg_L", "TN.mg_L", "TKN.mg_L", "secchi.m", "chla.Pcorr.ug_L",
 AlumTimeseries_long <- Timeseries %>%
   filter(DOW %in% DoseDates$DOW) %>%
   filter(parameter %in% parameters) 
-
-
 
 #subset data needed for analysis and add treatment metadata
 
@@ -84,10 +77,14 @@ for(i in 1:dim(DoseDates)[1]) {
            postLong = case_when(sampleDate >= DoseDates$Post.Lower[i] & 
                                    sampleYear < DoseDates$Additional.Stop[i] ~ 1,
                                 TRUE ~ 0),
+           preLong = case_when(sampleDate <= DoseDates$Pre.Upper[i] & 
+                                   sampleYear >= DoseDates$Back.Stop[i] ~ 1,
+                                TRUE ~ 0),
            postYear = sampleYear - year(DoseDates$Post.Lower[i]) + 1,
+           preYear = sampleYear - DoseDates$Back.Stop[i] + 1,
            evertreat = 1,
            DOWApp = paste(DoseDates$DOW[i], DoseDates$Application[i], sep="")) %>%
-    filter(!is.na(treatment) | postLong == 1) %>%
+    filter(!is.na(treatment) | postLong == 1 | preLong == 1) %>%
     filter(case_when(DoseDates$N.Type[i] == "TN.mg_L" ~ parameter != "TKN.mg_L",
                      DoseDates$N.Type[i] == "TKN.mg_L" ~ parameter != "TN.mg_L",
                      DoseDates$N.Type[i] == "Both" ~ parameter != "Both",
@@ -100,9 +97,10 @@ for(i in 1:dim(DoseDates)[1]) {
 AlumData_long = do.call(rbind, AlumList) %>%
   filter(!(DOW == "27004800" & (parameter == "chla.Pcorr.ug_L" | parameter == "chla.nonPcorr.ug_L"))) #remove chla from this lake for reasons detailed in the QAQC section
 
+
 #the long version of the data is helpful for identifying dataSource but I'm going to remove this and some other metadata when I make the data wide
 
-#There are a small number of data points that have both TKN and TN data from 27001600 and 27003100. I'll use the TN data for these points
+#There are a small number of sampling events that have both TKN and TN data from 27001600 and 27003100. I'll use the TN data for these points
 
 AlumData <- AlumData_long %>%
   select(-dataSource, -county, -Month) %>%
@@ -115,7 +113,7 @@ AlumData <- AlumData_long %>%
                                 TRUE ~ TKN.mg_L))
 
 
-#There are some duplicated sampling dates that arise when the "pre" window of treatment "b" overlaps with the long post window of an "a" treatment but separating the pre-post analysis data from the long post analysis data (done later) fixes this
+#There are some duplicated sampling events in this dataset when the "pre" window of treatment "b" overlaps with the long post window of an "a" treatment. These duplicated sampling events are not used in the same analysis, and separating pre-post analysis data from the long-term analysis data (done later) fixes this
 
 ```
 
@@ -250,13 +248,13 @@ for(i in 1:dim(ControlDates)[1]) {
                                    sampleYear == ControlDates$Pre.Two[i] ~ "pre",
                                  sampleYear == ControlDates$Post.One[i] | 
                                    sampleYear == ControlDates$Post.Two[i] ~ "post"),
-           postLong = case_when(sampleDate >= ControlDates$Post.Lower[i] & 
-                                   sampleYear < ControlDates$Additional.Stop[i] ~ 1,
-                                TRUE ~ 0),
-           postYear = sampleYear - year(ControlDates$Post.Lower[i]) + 1,
            evertreat = 0,
+           preLong = 0,
+           postLong = 0,
+           preYear = 0,
+           postYear = 0,
            DOWApp = paste(ControlDates$DOW[i], ControlDates$Application[i], sep="")) %>%
-    filter(!is.na(treatment) | postLong == 1) %>%
+    filter(!is.na(treatment)) %>%
     filter(case_when(ControlDates$N.Type[i] == "TN.mg_L" ~ parameter != "TKN.mg_L",
                      ControlDates$N.Type[i] == "TKN.mg_L" ~ parameter != "TN.mg_L"))
     
@@ -275,10 +273,6 @@ ControlData <- ControlData_long %>%
               values_from = c(result, gtlt)) %>%
   rename_with(~str_replace(., 'result_', '')) 
 
-#TEST <- ControlData %>%
-#  select(DOWApp, TN.mg_L, TKN.mg_L) %>%
-#  group_by(DOWApp) %>%
-#  summarise(TN = sum(!is.na(TN.mg_L)), TKN = sum(!is.na(TKN.mg_L)))
 
 ```
 
@@ -417,67 +411,36 @@ PrePostData <- AllData %>%
   filter(!is.na(treatment))
   
 LongData <- AllData %>%
-  filter(postLong == 1)
+  filter(postLong == 1 | preLong == 1) 
 
-AllData2 <- AllData %>%
-  select(-treatment, -postLong, -postYear, -evertreat, -DOWApp)
-test <- AllData2[!duplicated(AllData2),]
+```
 
-TP.BDL <- test %>%
+
+Calculate how much of the dataset is flagged as below detection
+
+```{r}
+BDL <- AllData %>%
+  select(-treatment, -postLong, -postYear, -evertreat, -DOWApp, -preYear, -preLong)
+BDL.dedup <- BDL[!duplicated(BDL),]  #deduplicates to account for data that shows up in both short-term and long-term analyses
+
+TP.BDL <- BDL.dedup %>%
   filter(!is.na(TP.mg_L)) %>%
   summarise(BDL = sum(gtlt_TP.mg_L > 0), total = n())
 
-TN.BDL <- test %>%
+TN.BDL <- BDL.dedup %>%
   filter(!is.na(N.mg_L)) %>%
   summarise(BDL = sum(gtlt_N.mg_L > 0), total = n())
 
-Chla.BDL <- test %>%
+Chla.BDL <- BDL.dedup %>%
   filter(!is.na(chla.ug_L)) %>%
   summarise(BDL = sum(gtlt_chla.ug_L > 0), total = n())
 
   
 ```
 
-----------------------------------
-Comparing the alum treated and control lakes
-Let's take a quick look at the data to see how it compares between lakes
-The BACI model will ultimately be used to assess statistical differences between the two groups
-
-```{r}
-BACI_stats2 <- PrePostData %>%
-  filter(treatment == "pre") %>%
-  group_by(evertreat) %>%
-  summarise(TP = mean(TP.mg_L, na.rm = T), 
-            chla = mean(chla.ug_L, na.rm = T),
-            TN = mean(N.mg_L, na.rm = T), 
-            TN.sd = sd(N.mg_L, na.rm = T),
-            secchi = mean(secchi.m, na.rm = T), 
-            NP = mean(NP.ratio, na.rm = T),
-            TP.med = median(TP.mg_L, na.rm = T), 
-            chla.med = median(chla.ug_L, na.rm = T),
-            TN.med = median(N.mg_L, na.rm = T), 
-            secchi.med = median(secchi.m, na.rm = T), 
-            NP.med = median(NP.ratio, na.rm = T))
-
-Lake_stats <- PrePostData %>%
-  filter(treatment == "pre") %>%
-  group_by(DOWApp, evertreat) %>%
-  summarise(TP = mean(TP.mg_L, na.rm = T), 
-            chla = mean(chla.ug_L, na.rm = T),
-            TN = mean(N.mg_L, na.rm = T), 
-            TN.se = sd(N.mg_L, na.rm = T),
-            secchi = mean(secchi.m, na.rm = T), 
-            NP = mean(NP.ratio, na.rm = T),
-            TP.med = median(TP.mg_L, na.rm = T), 
-            chla.med = median(chla.ug_L, na.rm = T),
-            TN.med = median(N.mg_L, na.rm = T), 
-            secchi.med = median(secchi.m, na.rm = T), 
-            NP.med = median(NP.ratio, na.rm = T))
-
-```
 
 ----------------------------------
-ANALYSIS
+SHORT-TERM ANALYSIS
 
 ```{r}
 PrePostData <- PrePostData %>%
@@ -504,8 +467,8 @@ ggplot(TP.emm, aes(x=factor(treatment), y=response,
   geom_point(position = dodge, show.legend = F, size = 2.5) +
   scale_shape_manual(values=c(15,19))+
   geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
-  #scale_colour_manual(values=c("grey45", "black")) +
-  scale_colour_manual(values=c("#DC3220", "#005AB5")) +
+  scale_colour_manual(values=c("black","grey45")) +
+  #scale_colour_manual(values=c("#DC3220", "#005AB5")) +
   theme_classic() +
   ylab("Total Phosphorus (mg/L)") +
   xlab("") +
@@ -553,8 +516,8 @@ ggplot(N.emm, aes(x=factor(treatment), y=response,
   geom_point(position = dodge, show.legend = F, size = 2.5) +
   scale_shape_manual(values=c(15,19))+
   geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
-  #scale_colour_manual(values=c("grey45", "black")) +
-  scale_colour_manual(values=c("#DC3220", "#005AB5")) +
+  scale_colour_manual(values=c("black", "grey45")) +
+  #scale_colour_manual(values=c("#DC3220", "#005AB5")) +
   theme_classic() +
   ylab("Total Nitrogen (mg/L)") +
   xlab("") +
@@ -601,8 +564,8 @@ ggplot(chla.emm, aes(x=factor(treatment), y=response,
   geom_point(position = dodge, show.legend = F, size = 2.5) +
   scale_shape_manual(values=c(15,19))+
   geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
-  #scale_colour_manual(values=c("grey45", "black")) +
-  scale_colour_manual(values=c("#DC3220", "#005AB5")) +
+  scale_colour_manual(values=c("black", "grey45")) +
+  #scale_colour_manual(values=c("#DC3220", "#005AB5")) +
   theme_classic() +
   ylab(my_y_title) +
   xlab("") +
@@ -646,11 +609,11 @@ ggplot(secchi.emm, aes(x=factor(treatment), y=emmean,
   geom_line(show.legend = F, position = dodge, linetype = "dotted") +
   geom_point(position = dodge, show.legend = F, size = 2.5) +
   scale_shape_manual(values=c(15,19))+
-  geom_errorbar(aes(ymax=asymp.UCL,ymin=asymp.LCL),position = dodge, show.legend = F, width  = 0.25) + 
-  #scale_colour_manual(values=c("grey45", "black")) +
-  scale_colour_manual(values=c("#DC3220", "#005AB5")) +
+  geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
+  scale_colour_manual(values=c("black", "grey45")) +
+  #scale_colour_manual(values=c("#DC3220", "#005AB5")) +
   theme_classic() +
-  ylab("Secchi (m)") +
+  ylab("Secchi Depth (m)") +
   xlab("")+
   expand_limits(y = 0) +
   scale_y_continuous(expand = c(0,0), limits = c(0,3)) +
@@ -679,8 +642,8 @@ ggplot(np.emm, aes(x=factor(treatment), y=response,
   geom_point(position = dodge, show.legend = F, size = 2.5) +
   scale_shape_manual(values=c(15,19))+
   geom_errorbar(aes(ymax=upper.CL,ymin=lower.CL),position = dodge, show.legend = F, width  = 0.25) + 
-  #scale_colour_manual(values=c("grey45", "black")) +
-  scale_colour_manual(values=c("#DC3220", "#005AB5")) +
+  scale_colour_manual(values=c("black", "grey45")) +
+  #scale_colour_manual(values=c("#DC3220", "#005AB5")) +
   theme_classic() +
   ylab("TN:TP") +
   xlab("") +
@@ -708,292 +671,192 @@ ggsave("NP_BACI.jpg", path = here("Plots"))
 ```
 
 -------------------------------------------
-LONG TERM ANALYSIS
+LONG-TERM ANALYSIS
 
-I want to see if there is a trend in the time following alum treatment (do we see rebound?)
-I think I can do this with another lmer
-Later I might want to go through and only select final treatments or something like that
+Is there a trend in these parameters after alum treatment? (sustained reduction? rebound?)
+Does the trend change from the trend leading into the alum treatment?
 
-Data clean up
-How many years of data do we have for each DOWApp
-I'm going to keep lakes with 4 or more years of data. A little arbitrary, but what isn't.
-The general outcome for what is significant in the N and P models doesn't seem to change with the length of data set cutoff. A longer cut off (postYear > 5) slightly decreases the significance of the difference in slope between treated and untreated for N but not its difference from 0 (I think? Should double check).
+Lake selection:
+How many years of data do we have for each DOWApp?
+I'm going to keep lakes with 4 or more years of data in the before-treatment period and 4 or more years of data in the after-treatment period.
+For the most part I'm only going to include first treatments if there are multiple treatments on a lake unless there is a large gap in time between treatments. The after-treatment window will end when the second treatment occurs, even if 8 years haven't elapsed.
+
+
+Comparing pre-treatment and post-treatment trends for alum treated lakes
 
 ```{r}
-DOWLength <- LongData %>%
-  select(DOWApp, postYear, evertreat) %>%
-  distinct() %>%
-  group_by(DOWApp, evertreat) %>%
-  summarise(n = n()) %>%
-  filter(n > 3)
 
+DOWLengthPost <- LongData %>%
+  filter(postLong == 1) %>%
+  select(DOWApp, postYear) %>%
+  distinct() %>%
+  group_by(DOWApp) %>%
+  summarise(n = n()) %>%
+  filter(n > 3) %>%
+  select(DOWApp)
+
+DOWLengthPre <- LongData %>%
+  filter(preLong == 1) %>%
+  select(DOWApp, preYear) %>%
+  distinct() %>%
+  group_by(DOWApp) %>%
+  summarise(n = n()) %>%
+  filter(n > 3) %>%
+  select(DOWApp)
+
+DOWLength <- inner_join(DOWLengthPost, DOWLengthPre) #selects treatments that have 4 years of data pre and post
+  
 LongData2 <- LongData %>%
   filter(DOWApp %in% DOWLength$DOWApp) %>%
-  mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
-                                evertreat == 1 ~ 0)) #re-coding to increase interpretability
-```
-
-Long term response models
-
-```{r}
-#BACI models
-
-TP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L)), 
-                      log(TP.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
-summary(TP_lt_model)
-
-boot_TP <- bootMer(TP_lt_model,
-                   nsim = 100,
-                   FUN = function(x) { predict(x, newdata = newdat, re.form = NA) })
-
-test <- predict(TP_lt_model, newdata = newdat, re.form = NA)
- 
-boot_TP
-
-mean(boot_TP$t[,1]) + qnorm(p = c(0.025, 0.975)) * sd(boot_TP$t[,1])
-
-
-
-N_lt_model <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L)), 
-                      log(N.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
-summary(N_lt_model)
-
-Secchi_lt_model <- lmer(data = LongData2 %>% filter(!is.na(secchi.m)), 
-                      secchi.m ~ postYear*evertreat2 + (1|DOWApp))
-summary(Secchi_lt_model)
-
-Chla_lt_model <- lmer(data = LongData2 %>% filter(!is.na(chla.ug_L)), 
-                      log(chla.ug_L) ~ postYear*evertreat2 + (1|DOWApp))
-summary(Chla_lt_model)
-
-NP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(NP.ratio)), 
-                      log(NP.ratio) ~ postYear*evertreat2 + (1|DOWApp))
-summary(NP_lt_model)
-
+  mutate(modYear = case_when(preLong == 1 ~ preYear,
+                             postLong == 1 ~ postYear)) %>%
+  mutate(plotYear = case_when(preLong == 1 ~ preYear - 9,
+                             postLong == 1 ~ postYear))
 
 ```
 
-Add the PRE data for plotting
+```{r, fig.width = 4, fig.height=3}
+P_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L)), 
+                      log(TP.mg_L) ~ modYear*preLong + (1|DOWApp))
+summary(P_lt_model2)
 
-DATA PREP
-```{r}
-preData <- PrePostData %>%
-  filter(DOWApp %in% DOWLength$DOWApp) %>%
-  filter(treatment == "pre") %>%
-  mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
-                                evertreat == 1 ~ 0),
-         postYear = 0) 
+N_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L)), 
+                      log(N.mg_L) ~ modYear*preLong + (1|DOWApp))
+summary(N_lt_model2)
 
-LongData3 <- rbind(preData, LongData2)
+Secchi_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(secchi.m)), 
+                      secchi.m ~ modYear*preLong + (1|DOWApp))
+summary(Secchi_lt_model2)
 
-#predict for plotting ----------------------
+Chla_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(chla.ug_L)), 
+                      log(chla.ug_L) ~ modYear*preLong + (1|DOWApp))
+summary(Chla_lt_model2)
 
-coef_P <- fixef(TP_lt_model)
-coef_N <- fixef(N_lt_model)
-coef_S <- fixef(Secchi_lt_model)
-coef_C <- fixef(Chla_lt_model)
-coef_NP <- fixef(NP_lt_model)
+NP_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(NP.ratio)), 
+                      log(NP.ratio) ~ modYear*preLong + (1|DOWApp))
+summary(NP_lt_model2)
 
-newdat <- data.frame(evertreat = c(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1), 
-                     postYear = c(seq(1, 8, 1),seq(1, 8, 1)),
-                     evertreat2 = c(1, 1, 1, 1, 1, 1, 1, 1,0, 0, 0, 0, 0, 0, 0, 0))
+TP.emt <- test(emtrends(P_lt_model2, "preLong", var = "modYear"))
+TN.emt <- test(emtrends(N_lt_model2, "preLong", var = "modYear"))
+NP.emt <- test(emtrends(NP_lt_model2, "preLong", var = "modYear"))
+chla.emt <- test(emtrends(Chla_lt_model2, "preLong", var = "modYear"))
+Secchi.emt <- test(emtrends(Secchi_lt_model2, "preLong", var = "modYear"))
 
-test <- predict(TP_lt_model, newdata = newdat, re.form = NA)
-
-newdat <- newdat %>%
-  mutate(TP.log = coef_P[1] + postYear*coef_P[2] + evertreat2*coef_P[3] + postYear*evertreat2*coef_P[4],
-         TP.mg_L = exp(TP.log),
-         N.log = coef_N[1] + postYear*coef_N[2] + evertreat2*coef_N[3] + postYear*evertreat2*coef_N[4],
-         N.mg_L = exp(N.log),
-         chla.log = coef_C[1] + postYear*coef_C[2] + evertreat2*coef_C[3] + postYear*evertreat2*coef_C[4],
-         chla.ug_L = exp(chla.log),
-         secchi.m = coef_S[1] + postYear*coef_S[2] + evertreat2*coef_S[3] + postYear*evertreat2*coef_S[4],
-         NP.log = coef_NP[1] + postYear*coef_NP[2] + evertreat2*coef_NP[3] + postYear*evertreat2*coef_NP[4],
-         NP.ratio = exp(NP.log))
-
-newdat[nrow(newdat) + 1,] = c(0,0,1,NA,NA,NA,NA,NA,NA,NA,NA,NA)
-newdat[nrow(newdat) + 1,] = c(1,0,0,NA,NA,NA,NA,NA,NA,NA,NA,NA)
-
-#median lines for plots
-
-yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
-yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
-yint.S3 <- median((LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1 & postYear ==0))$secchi.m)
-yint.C3 <- median((LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1 & postYear ==0))$chla.ug_L)
-yint.NP3 <- median((LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1 & postYear ==0))$NP.ratio)
-```
+###-------------------------------------
 
 
-BACI plots
+newdat3 <- data.frame(modYear = c(seq(1, 8, 1), seq(1, 8, 1)),
+                     preLong = c(1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0),
+                     plotYear = c(seq(-8, -1, 1), seq(1, 8, 1)))
 
-```{r, fig.width = 3.5, fig.height=3}
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = TP.mg_L),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(TP.mg_L)), 
-               aes(x=factor(postYear), y=TP.mg_L, fill=factor(evertreat2)),
-               outlier.size=0.5, lwd = 0.5) +
-   scale_fill_manual(values=c("#DC3220", "#005AB5")) +
-  ylab("Total Phosphorus (mg/L)") +
-  xlab("") 
-ggsave("TP_lt_BACI.jpg", path = here("Plots"))
+newdat3$TP <- exp(predict(P_lt_model2, newdata = newdat3, re.form = NA))
+newdat3$TN <- exp(predict(N_lt_model2, newdata = newdat3, re.form = NA))
+newdat3$NP <- exp(predict(NP_lt_model2, newdata = newdat3, re.form = NA))
+newdat3$Secchi <- predict(Secchi_lt_model2, newdata = newdat3, re.form = NA)
+newdat3$chla <- exp(predict(Chla_lt_model2, newdata = newdat3, re.form = NA))
+
+
 
 ggplot() + 
   scale_y_log10() +
   theme_classic() +
-  geom_hline(yintercept = yint.N3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = N.mg_L),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(N.mg_L)), 
-               aes(x=factor(postYear), y=N.mg_L, fill=factor(evertreat2)),
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(N.mg_L)), 
+               aes(x=factor(plotYear), y=N.mg_L, fill=factor(preLong)),
                outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
-  ylab("Total Nitrogen (mg/L)") +
-  xlab("") 
+  scale_fill_manual(values=c("grey", "white")) +
+  geom_line(data = newdat3, 
+            aes(group = preLong, x = as.factor(plotYear), y = TN, 
+                colour = as.factor(preLong)),
+            show.legend = F,
+            lwd = 0.8) +
+  scale_color_manual(values=c(I("black"), I("#005AB5"))) +
+  ylab("Total Nitrogen (mg N/L)") +
+  xlab("Years Relative to Alum Treatment") 
 
-ggsave("TN_lt_BACI.jpg", path = here("Plots"))
+ggsave("LTb_TN.jpg", path = here("Plots"))
+
+
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(TP.mg_L)), 
+               aes(x=factor(plotYear), y=TP.mg_L, fill=factor(preLong)),
+               outlier.size=0.5, lwd = 0.5) +
+  scale_fill_manual(values=c("grey", "white")) +
+  geom_line(data = newdat3, 
+            aes(group = preLong, x = as.factor(plotYear), y = TP, 
+                colour = as.factor(preLong)),
+            show.legend = F,
+            lwd = 0.8) +
+  scale_color_manual(values=c(I("#DC3220"), I("black"))) +
+  ylab("Total Phosphorus (mg P/L)") +
+  xlab("Years Relative to Alum Treatment") 
+
+ggsave("LTb_TP.jpg", path = here("Plots"))
+
+
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(NP.ratio)), 
+               aes(x=factor(plotYear), y=NP.ratio, fill=factor(preLong)),
+               outlier.size=0.5, lwd = 0.5) +
+  scale_fill_manual(values=c("grey", "white")) +
+  geom_line(data = newdat3, 
+            aes(group = preLong, x = as.factor(plotYear), y = NP, 
+                colour = as.factor(preLong)),
+            show.legend = F,
+            lwd = 0.8) +
+  scale_color_manual(values=c(I("#005AB5"), I("black"))) +
+  ylab("TN:TP") +
+  xlab("Years Relative to Alum Treatment") 
+
+ggsave("LTb_NP.jpg", path = here("Plots"))
 
 my_y_title <- expression(paste("Chlorophyll ", italic("a"), " (ug/L)"))
 ggplot() + 
   scale_y_log10() +
   theme_classic() +
-  geom_hline(yintercept = yint.C3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = chla.ug_L),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(chla.ug_L)), 
-               aes(x=factor(postYear), y=chla.ug_L, fill=factor(evertreat2)),
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(chla.ug_L)), 
+               aes(x=factor(plotYear), y=chla.ug_L, fill=factor(preLong)),
                outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
+  scale_fill_manual(values=c("grey", "white")) +
+  geom_line(data = newdat3, 
+            aes(group = preLong, x = as.factor(plotYear), y = chla, 
+                colour = as.factor(preLong)),
+            show.legend = F,
+            lwd = 0.8) +
+  scale_color_manual(values=c(I("#DC3220"), I("black"))) +
   ylab(my_y_title) +
-  xlab("") 
+  xlab("Years Relative to Alum Treatment") 
 
-ggsave("Chla_lt_BACI.jpg", path = here("Plots"))
+ggsave("LTb_chla.jpg", path = here("Plots"))
 
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_hline(yintercept = yint.NP3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = NP.ratio),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(NP.ratio)), 
-               aes(x=factor(postYear), y=NP.ratio, fill=factor(evertreat2)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
-  ylab("TN:TP") +
-  xlab("") 
-
-ggsave("NP_lt_BACI.jpg", path = here("Plots"))
 
 ggplot() + 
   #scale_y_log10() +
   theme_classic() +
-  geom_hline(yintercept = yint.S3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = secchi.m),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(secchi.m)), 
-               aes(x=factor(postYear), y=secchi.m, fill=factor(evertreat2)),
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(secchi.m)), 
+               aes(x=factor(plotYear), y=secchi.m, fill=factor(preLong)),
                outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
+  scale_fill_manual(values=c("grey", "white")) +
+  geom_line(data = newdat3, 
+            aes(group = preLong, x = as.factor(plotYear), y = Secchi, 
+                colour = as.factor(preLong)),
+            show.legend = F,
+            lwd = 0.8) +
+  scale_color_manual(values=c(I("#005AB5"), I("#DC3220"))) +
   ylab("Secchi Depth (m)") +
-  xlab("") 
+  xlab("Years Relative to Alum Treatment") 
 
-ggsave("Secchi_lt_BACI.jpg", path = here("Plots"))
-
-```
-
-Longterm plots without the control lakes
-
-```{r, fig.width = 4, fig.height=3}
-  
-yint.TP <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==1))$TP.mg_L)
-yint.TP2 <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1))$TP.mg_L)
-yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
-
-
-yint.N <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==1))$N.mg_L)
-yint.N2 <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1))$N.mg_L)
-yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
-
-ggplot(LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1), aes(x=factor(postYear), y=TP.mg_L)) +
-  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("Total Phosphorus (mg/L)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = TP.mg_L), size = 1.2, color = "red")
-
-ggsave("TP_long.jpg", path = here("Plots"))
-
-ggplot(LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYear), y=N.mg_L)) +
-  geom_hline(yintercept = yint.N3, linetype = "dashed") +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("Nitrogen (mg/L)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
-
-ggsave("TKN_long.jpg", path = here("Plots"))
-
-
-yint.S3 <- median((LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1 & postYear ==0))$secchi.m)
-ggplot(LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1), aes(x=factor(postYear), y=secchi.m)) +
-  #scale_y_log10() +
-  geom_hline(yintercept = yint.S3, linetype = "dashed") +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("Secchi (m)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
-ggsave("Secchi_long.jpg", path = here("Plots"))
-
-yint.C3 <- median((LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1 & postYear ==0))$chla.ug_L)
-ggplot(LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1), aes(x=factor(postYear), y=chla.ug_L)) +
-  scale_y_log10() +
-  geom_hline(yintercept = yint.C3, linetype = "dashed") +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("Chlorophyll a (ug/L)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
-ggsave("Chla_long.jpg", path = here("Plots"))
-
-yint.NP3 <- median((LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1 & postYear ==0))$NP.ratio)
-ggplot(LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1), aes(x=factor(postYear), y=NP.ratio)) +
-  scale_y_log10() +
-  geom_hline(yintercept = yint.NP3, linetype = "dashed") +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("N:P") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
-ggsave("NP_long.jpg", path = here("Plots"))
+ggsave("LTb_Secchi.jpg", path = here("Plots"))
 
 ```
 
 
 
 ---------------------------------------------------------
-NOX!!!
+NOX
 Let's look at short term pre/post
 
 ```{r}
@@ -1001,29 +864,19 @@ NOX <- PrePostData %>%
   filter(!is.na(NOX.mg_L)) %>%
   mutate(NOX.frac = NOX.mg_L/N.mg_L)
 
+#how many treatments have NOX data
+NOX.treat <- NOX %>% filter(evertreat == 1) %>% group_by(DOWApp, treatment) %>% summarise(n = n())
+
+#what detection limits are actually reported
+DL <- NOX %>% filter(gtlt_NOX.mg_L > 0) %>% group_by(NOX.mg_L) %>% summarise(n = n())
+
 #how many data points are marked as BDL
-NOX %>% group_by(evertreat) %>% summarise(BDL = sum(gtlt_NOX.mg_L > 0), total = n())
+NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(gtlt_NOX.mg_L > 0), total = n())
 
 #how much is < 0.03, the most common detection limit
 NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(NOX.mg_L <= 0.03 | gtlt_NOX.mg_L > 0), total = n())
 
-#how many treatments have NOX data
-NOX %>% filter(evertreat == 1) %>% group_by(DOWApp) %>% summarise(n = n())
-
-#585/647 or ~90% is probably BDL
-
-#how much of the N pool is NOX in detectable samples?
-NOX2 <- NOX %>%
-  filter((NOX.mg_L > 0.03 & gtlt_NOX.mg_L < 0.1) & gtlt_N.mg_L < 0.1) %>%
-  filter(evertreat == 1)
-
-NOX3 <- NOX2 %>% filter(NOX.frac >= 0.05)
-
-#In the small number of detectable samples that have paired TKN or TN data that is also above detection (56)
-# 42 samples are > 5% of the TN or TKN pool, and of those only 13 are post-alum samples
-
 #Essentially, there's no evidence for widespread increases in NOX standing pools like in deeper, oligotrophic systems 
-#that could explain the substantial decrease in TKN seen.
 
 ```
 
@@ -1161,107 +1014,6 @@ mean(PrePost_Molar_wide$pre)
 mean(PrePost_Molar_wide$post)
 sum(PrePost_Molar_wide$pre > 50)/46*100
 sum(PrePost_Molar_wide$post > 50)/46*100
-
-
-```
-
-
-looking at change in N:P for both alum and non-alum sites
-
-```{r, fig.width = 4, fig.height = 3}
-PrePost_Summary2 <- PrePostData %>%
-  #filter(evertreat == 1) %>%
-  group_by(DOWApp, treatment, evertreat) %>%
-  summarise(TP = mean(TP.mg_L, na.rm = T), TN = mean(N.mg_L, na.rm = T)) %>%
-  mutate(NP = (TN/TP) * (30.974/14.007)) %>%
-  pivot_wider(names_from = treatment, values_from = c(TP, TN, NP)) %>%
-  mutate(TP_del = TP_post - TP_pre,
-         TN_del = TN_post - TN_pre,
-         NP_del = NP_post - NP_pre,
-         TP_perc = (TP_del/TP_pre)*100,
-         TN_perc = (TN_del/TN_pre)*100,
-         NP_perc = (NP_del/NP_pre)*100,
-         TP.delmol = TP_del/30.974,
-         TN.delmol = TN_del/14.007)
-
-
-PrePost_Molar2 <- PrePostData %>%
-  #filter(evertreat == 1) %>%
-  group_by(DOWApp, treatment, evertreat) %>%
-  summarise(TP = mean(TP.mg_L, na.rm = T), TN = mean(N.mg_L, na.rm = T)) %>%
-  mutate(TP.mol = (TP/30.974)*1000,
-         TN.mol = (TN/14.007)*1000,
-         NP.mol = TN.mol/TP.mol) 
-
-
-#percent change
-ggplot(PrePost_Summary2 %>% filter(evertreat == 0) %>% filter(TN_perc != "NaN"), aes(x = TP_perc, y = TN_perc)) +
-  coord_equal() +
-  geom_point() +
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", color = "black", se = F)  +
- # geom_point(data = PrePost_Summary %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-#  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Percent Change in TP") + 
-  ylab("Percent Change in TN")
-
-
-#plot with molar ratios
-#a = c(0.001,0.01)
-#b = c(0.02,0.2)
-a = c(1,10)
-b = c(20,200)
-Hecky_low <- data.frame(a, b)
-
-#c = c(0.0005,0.01)
-#d = c(0.025,0.5)
-c = c(0.5,10)
-d = c(25,500)
-Hecky_high <- data.frame(c, d)
-
-# plot change in N:P with Hecky 50 and 20 stoich lines
-ggplot(PrePost_Molar2 %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
-  coord_equal() +
-  scale_y_log10() +
-  scale_x_log10() +
-  geom_point(data = PrePost_Molar2 %>% filter(evertreat == 1), aes(shape = treatment, colour = "black"), show.legend = F) +
-  scale_shape_manual(values = c(21, 19)) + 
-  geom_point(data = PrePost_Molar2 %>% filter(evertreat == 0), aes(shape = treatment, colour = "grey"), show.legend = F) +
-  geom_line(data = Hecky_low, aes(x = a, y = b)) +
-  geom_line(data = Hecky_high, aes(x = c, y = d))+
-  theme_classic() +
-   xlab("Total Phosphorus (umol/L)") + 
-  ylab("Total Nitrogen (umol/L)")
-
-
-ggplot(PrePost_Molar2 %>% filter(evertreat == 0) %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
-  coord_equal() +
-  scale_y_log10() +
-  scale_x_log10() +
-  geom_point(aes(shape = treatment), show.legend = F) +
-  scale_shape_manual(values = c(21, 19)) + 
-  geom_line(data = Hecky_low, aes(x = a, y = b)) +
-  geom_line(data = Hecky_high, aes(x = c, y = d))+
-  theme_classic() +
-   xlab("Total Phosphorus (umol/L)") + 
-  ylab("Total Nitrogen (umol/L)")
-
-
-
-#test the change in N:P for untreated lakes
-PrePost_Molar_wide2 <- PrePost_Molar2 %>%
-  filter(evertreat == 0) %>%
-  select(DOWApp, treatment, NP.mol) %>%
-  pivot_wider(names_from = treatment, values_from = NP.mol) %>%
-  filter(pre != "NaN")
-
-t.test(PrePost_Molar_wide2$pre, PrePost_Molar_wide2$post, paired = TRUE, alternative = "two.sided")
-mean(PrePost_Molar_wide2$pre)
-mean(PrePost_Molar_wide2$post)
-sum(PrePost_Molar_wide2$pre > 50)/30*100
-sum(PrePost_Molar_wide2$post > 50)/30*100
 
 
 ```
@@ -1412,6 +1164,40 @@ ggsave("Morph_TNperc.jpg", path = here("Plots"))
 
 
 ```
+
+
+Calculate how much of the dataset is flagged as below detection
+
+```{r}
+BDL1 <- PrePostData %>%
+  select(DOW, sampleDate, TP.mg_L, gtlt_TP.mg_L, N.mg_L, gtlt_N.mg_L, chla.ug_L, gtlt_chla.ug_L)
+
+BDL2 <- LongData2 %>%
+  select(DOW, sampleDate, TP.mg_L, gtlt_TP.mg_L, N.mg_L, gtlt_N.mg_L, chla.ug_L, gtlt_chla.ug_L)
+
+BDL <- rbind(BDL1, BDL2)
+BDL.dedup <- BDL[!duplicated(BDL),]  
+
+TP.BDL <- BDL.dedup %>%
+  filter(!is.na(TP.mg_L)) %>%
+  summarise(BDL = sum(gtlt_TP.mg_L > 0), total = n())
+
+TN.BDL <- BDL.dedup %>%
+  filter(!is.na(N.mg_L)) %>%
+  summarise(BDL = sum(gtlt_N.mg_L > 0), total = n())
+
+Chla.BDL <- BDL.dedup %>%
+  filter(!is.na(chla.ug_L)) %>%
+  summarise(BDL = sum(gtlt_chla.ug_L > 0), total = n())
+
+  
+```
+
+
+
+
+
+
 
 Case study! Looking at Kohlman and Como plants
 
@@ -2098,7 +1884,7 @@ Washington_option <- Washington %>%
   group_by(DOW) %>%
   summarise(TP = mean(result))
 
-#Let's use 82010100 for avg depth and amount of TP although the other two have good data coverage if needed
+#Let's use 82010100 for avg depth and amount of TP although the others two have good data coverage if needed
 
 
 ```
@@ -2168,6 +1954,8 @@ Hennepin_options <- Hennepin %>%
 
 ```
 
+
+
 ```{r}
 Dakota <- AlumTimeseries %>%
   filter(str_detect(DOW, "^19"))
@@ -2184,29 +1972,7 @@ Dakota_options <- Dakota %>%
 
 
 
-old code, not currently used in paper
-```{r}
-TP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L)), 
-                      log(TP.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
 
-TP_treat_model <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L) & evertreat == 1), 
-                      log(TP.mg_L) ~ postYear + (1|DOWApp))
-
-summary(TP_lt_model)
-
-#summary(TP_treat_model)
-
-
-N_lt_model <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L)), 
-                      log(N.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
-
-N_treat_model <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L) & evertreat == 1), 
-                      log(N.mg_L) ~ postYear + (1|DOWApp))
-
-summary(N_lt_model)
-
-
-```
 
 
 old code, not currently used in paper
@@ -2278,4 +2044,374 @@ ggplot(LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYe
 
 ```
 
+```{r}
+DOWLength <- LongData %>%
+  select(DOWApp, postYear, evertreat) %>%
+  distinct() %>%
+  group_by(DOWApp, evertreat) %>%
+  summarise(n = n()) %>%
+  filter(n > 3)
+
+LongData2 <- LongData %>%
+  filter(DOWApp %in% DOWLength$DOWApp) %>%
+  mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
+                                evertreat == 1 ~ 0)) #re-coding to increase interpretability
+```
+
+Long term response models
+
+```{r}
+#BACI models
+
+TP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L)), 
+                      log(TP.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
+summary(TP_lt_model)
+
+boot_TP <- bootMer(TP_lt_model,
+                   nsim = 100,
+                   FUN = function(x) { predict(x, newdata = newdat, re.form = NA) })
+
+test <- predict(TP_lt_model, newdata = newdat, re.form = NA)
+ 
+boot_TP
+
+mean(boot_TP$t[,1]) + qnorm(p = c(0.025, 0.975)) * sd(boot_TP$t[,1])
+
+
+
+N_lt_model <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L)), 
+                      log(N.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
+summary(N_lt_model)
+
+Secchi_lt_model <- lmer(data = LongData2 %>% filter(!is.na(secchi.m)), 
+                      secchi.m ~ postYear*evertreat2 + (1|DOWApp))
+summary(Secchi_lt_model)
+
+Chla_lt_model <- lmer(data = LongData2 %>% filter(!is.na(chla.ug_L)), 
+                      log(chla.ug_L) ~ postYear*evertreat2 + (1|DOWApp))
+summary(Chla_lt_model)
+
+NP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(NP.ratio)), 
+                      log(NP.ratio) ~ postYear*evertreat2 + (1|DOWApp))
+summary(NP_lt_model)
+
+
+```
+
+Add the PRE data for plotting
+
+DATA PREP
+```{r}
+preData <- PrePostData %>%
+  filter(DOWApp %in% DOWLength$DOWApp) %>%
+  filter(treatment == "pre") %>%
+  mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
+                                evertreat == 1 ~ 0),
+         postYear = 0) 
+
+LongData3 <- rbind(preData, LongData2)
+
+#predict for plotting ----------------------
+
+coef_P <- fixef(TP_lt_model)
+coef_N <- fixef(N_lt_model)
+coef_S <- fixef(Secchi_lt_model)
+coef_C <- fixef(Chla_lt_model)
+coef_NP <- fixef(NP_lt_model)
+
+newdat <- data.frame(evertreat = c(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1), 
+                     postYear = c(seq(1, 8, 1),seq(1, 8, 1)),
+                     evertreat2 = c(1, 1, 1, 1, 1, 1, 1, 1,0, 0, 0, 0, 0, 0, 0, 0))
+
+test <- predict(TP_lt_model, newdata = newdat, re.form = NA)
+
+newdat <- newdat %>%
+  mutate(TP.log = coef_P[1] + postYear*coef_P[2] + evertreat2*coef_P[3] + postYear*evertreat2*coef_P[4],
+         TP.mg_L = exp(TP.log),
+         N.log = coef_N[1] + postYear*coef_N[2] + evertreat2*coef_N[3] + postYear*evertreat2*coef_N[4],
+         N.mg_L = exp(N.log),
+         chla.log = coef_C[1] + postYear*coef_C[2] + evertreat2*coef_C[3] + postYear*evertreat2*coef_C[4],
+         chla.ug_L = exp(chla.log),
+         secchi.m = coef_S[1] + postYear*coef_S[2] + evertreat2*coef_S[3] + postYear*evertreat2*coef_S[4],
+         NP.log = coef_NP[1] + postYear*coef_NP[2] + evertreat2*coef_NP[3] + postYear*evertreat2*coef_NP[4],
+         NP.ratio = exp(NP.log))
+
+newdat[nrow(newdat) + 1,] = c(0,0,1,NA,NA,NA,NA,NA,NA,NA,NA,NA)
+newdat[nrow(newdat) + 1,] = c(1,0,0,NA,NA,NA,NA,NA,NA,NA,NA,NA)
+
+#median lines for plots
+
+yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
+yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
+yint.S3 <- median((LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1 & postYear ==0))$secchi.m)
+yint.C3 <- median((LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1 & postYear ==0))$chla.ug_L)
+yint.NP3 <- median((LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1 & postYear ==0))$NP.ratio)
+```
+
+
+BACI plots
+
+```{r, fig.width = 3.5, fig.height=3}
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = TP.mg_L),
+            show.legend = F,
+            size = 0.9) +
+  scale_color_manual(values=c("#DC3220", "#005AB5")) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(TP.mg_L)), 
+               aes(x=factor(postYear), y=TP.mg_L, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+   scale_fill_manual(values=c("#DC3220", "#005AB5")) +
+  ylab("Total Phosphorus (mg/L)") +
+  xlab("") 
+ggsave("TP_lt_BACI.jpg", path = here("Plots"))
+
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.N3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = N.mg_L),
+            show.legend = F,
+            size = 0.9) +
+  scale_color_manual(values=c("#DC3220", "#005AB5")) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(N.mg_L)), 
+               aes(x=factor(postYear), y=N.mg_L, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
+  ylab("Total Nitrogen (mg/L)") +
+  xlab("") 
+
+ggsave("TN_lt_BACI.jpg", path = here("Plots"))
+
+my_y_title <- expression(paste("Chlorophyll ", italic("a"), " (ug/L)"))
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.C3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = chla.ug_L),
+            show.legend = F,
+            size = 0.9) +
+  scale_color_manual(values=c("#DC3220", "#005AB5")) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(chla.ug_L)), 
+               aes(x=factor(postYear), y=chla.ug_L, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
+  ylab(my_y_title) +
+  xlab("") 
+
+ggsave("Chla_lt_BACI.jpg", path = here("Plots"))
+
+ggplot() + 
+  scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.NP3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = NP.ratio),
+            show.legend = F,
+            size = 0.9) +
+  scale_color_manual(values=c("#DC3220", "#005AB5")) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(NP.ratio)), 
+               aes(x=factor(postYear), y=NP.ratio, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
+  ylab("TN:TP") +
+  xlab("") 
+
+ggsave("NP_lt_BACI.jpg", path = here("Plots"))
+
+ggplot() + 
+  #scale_y_log10() +
+  theme_classic() +
+  geom_hline(yintercept = yint.S3, linetype = "dashed") +
+  geom_line(data = newdat, 
+            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = secchi.m),
+            show.legend = F,
+            size = 0.9) +
+  scale_color_manual(values=c("#DC3220", "#005AB5")) +
+  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(secchi.m)), 
+               aes(x=factor(postYear), y=secchi.m, fill=factor(evertreat2)),
+               outlier.size=0.5, lwd = 0.5) +
+  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
+  ylab("Secchi Depth (m)") +
+  xlab("") 
+
+ggsave("Secchi_lt_BACI.jpg", path = here("Plots"))
+
+```
+
+Longterm plots without the control lakes
+
+```{r, fig.width = 4, fig.height=3}
+  
+yint.TP <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==1))$TP.mg_L)
+yint.TP2 <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1))$TP.mg_L)
+yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
+
+
+yint.N <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==1))$N.mg_L)
+yint.N2 <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1))$N.mg_L)
+yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
+
+ggplot(LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1), aes(x=factor(postYear), y=TP.mg_L)) +
+  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
+  scale_y_log10() +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("Total Phosphorus (mg/L)") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = TP.mg_L), size = 1.2, color = "red")
+
+ggsave("TP_long.jpg", path = here("Plots"))
+
+ggplot(LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYear), y=N.mg_L)) +
+  geom_hline(yintercept = yint.N3, linetype = "dashed") +
+  scale_y_log10() +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("Nitrogen (mg/L)") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
+
+ggsave("TKN_long.jpg", path = here("Plots"))
+
+
+yint.S3 <- median((LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1 & postYear ==0))$secchi.m)
+ggplot(LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1), aes(x=factor(postYear), y=secchi.m)) +
+  #scale_y_log10() +
+  geom_hline(yintercept = yint.S3, linetype = "dashed") +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("Secchi (m)") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
+ggsave("Secchi_long.jpg", path = here("Plots"))
+
+yint.C3 <- median((LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1 & postYear ==0))$chla.ug_L)
+ggplot(LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1), aes(x=factor(postYear), y=chla.ug_L)) +
+  scale_y_log10() +
+  geom_hline(yintercept = yint.C3, linetype = "dashed") +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("Chlorophyll a (ug/L)") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
+ggsave("Chla_long.jpg", path = here("Plots"))
+
+yint.NP3 <- median((LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1 & postYear ==0))$NP.ratio)
+ggplot(LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1), aes(x=factor(postYear), y=NP.ratio)) +
+  scale_y_log10() +
+  geom_hline(yintercept = yint.NP3, linetype = "dashed") +
+  geom_boxplot(show.legend = F) +
+  theme_classic() +
+  ylab("N:P") +
+  xlab("") 
+  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
+ggsave("NP_long.jpg", path = here("Plots"))
+
+```
+
+looking at change in N:P for both alum and non-alum sites
+
+```{r, fig.width = 4, fig.height = 3}
+PrePost_Summary2 <- PrePostData %>%
+  #filter(evertreat == 1) %>%
+  group_by(DOWApp, treatment, evertreat) %>%
+  summarise(TP = mean(TP.mg_L, na.rm = T), TN = mean(N.mg_L, na.rm = T)) %>%
+  mutate(NP = (TN/TP) * (30.974/14.007)) %>%
+  pivot_wider(names_from = treatment, values_from = c(TP, TN, NP)) %>%
+  mutate(TP_del = TP_post - TP_pre,
+         TN_del = TN_post - TN_pre,
+         NP_del = NP_post - NP_pre,
+         TP_perc = (TP_del/TP_pre)*100,
+         TN_perc = (TN_del/TN_pre)*100,
+         NP_perc = (NP_del/NP_pre)*100,
+         TP.delmol = TP_del/30.974,
+         TN.delmol = TN_del/14.007)
+
+
+PrePost_Molar2 <- PrePostData %>%
+  #filter(evertreat == 1) %>%
+  group_by(DOWApp, treatment, evertreat) %>%
+  summarise(TP = mean(TP.mg_L, na.rm = T), TN = mean(N.mg_L, na.rm = T)) %>%
+  mutate(TP.mol = (TP/30.974)*1000,
+         TN.mol = (TN/14.007)*1000,
+         NP.mol = TN.mol/TP.mol) 
+
+
+#percent change
+ggplot(PrePost_Summary2 %>% filter(evertreat == 0) %>% filter(TN_perc != "NaN"), aes(x = TP_perc, y = TN_perc)) +
+  coord_equal() +
+  geom_point() +
+  theme_classic() +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  geom_vline(xintercept = 0, lty = "dashed") +
+  geom_smooth(method = "lm", color = "black", se = F)  +
+ # geom_point(data = PrePost_Summary %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
+#  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  xlab("Percent Change in TP") + 
+  ylab("Percent Change in TN")
+
+
+#plot with molar ratios
+#a = c(0.001,0.01)
+#b = c(0.02,0.2)
+a = c(1,10)
+b = c(20,200)
+Hecky_low <- data.frame(a, b)
+
+#c = c(0.0005,0.01)
+#d = c(0.025,0.5)
+c = c(0.5,10)
+d = c(25,500)
+Hecky_high <- data.frame(c, d)
+
+# plot change in N:P with Hecky 50 and 20 stoich lines
+ggplot(PrePost_Molar2 %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
+  coord_equal() +
+  scale_y_log10() +
+  scale_x_log10() +
+  geom_point(data = PrePost_Molar2 %>% filter(evertreat == 1), aes(shape = treatment, colour = "black"), show.legend = F) +
+  scale_shape_manual(values = c(21, 19)) + 
+  geom_point(data = PrePost_Molar2 %>% filter(evertreat == 0), aes(shape = treatment, colour = "grey"), show.legend = F) +
+  geom_line(data = Hecky_low, aes(x = a, y = b)) +
+  geom_line(data = Hecky_high, aes(x = c, y = d))+
+  theme_classic() +
+   xlab("Total Phosphorus (umol/L)") + 
+  ylab("Total Nitrogen (umol/L)")
+
+
+ggplot(PrePost_Molar2 %>% filter(evertreat == 0) %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
+  coord_equal() +
+  scale_y_log10() +
+  scale_x_log10() +
+  geom_point(aes(shape = treatment), show.legend = F) +
+  scale_shape_manual(values = c(21, 19)) + 
+  geom_line(data = Hecky_low, aes(x = a, y = b)) +
+  geom_line(data = Hecky_high, aes(x = c, y = d))+
+  theme_classic() +
+   xlab("Total Phosphorus (umol/L)") + 
+  ylab("Total Nitrogen (umol/L)")
+
+
+
+#test the change in N:P for untreated lakes
+PrePost_Molar_wide2 <- PrePost_Molar2 %>%
+  filter(evertreat == 0) %>%
+  select(DOWApp, treatment, NP.mol) %>%
+  pivot_wider(names_from = treatment, values_from = NP.mol) %>%
+  filter(pre != "NaN")
+
+t.test(PrePost_Molar_wide2$pre, PrePost_Molar_wide2$post, paired = TRUE, alternative = "two.sided")
+mean(PrePost_Molar_wide2$pre)
+mean(PrePost_Molar_wide2$post)
+sum(PrePost_Molar_wide2$pre > 50)/30*100
+sum(PrePost_Molar_wide2$post > 50)/30*100
+
+
+```
 
