@@ -7,14 +7,16 @@ date: "2024-11-19"
 ```{r setup, include=FALSE}
 library(knitr) #for knitting! and tables
 library(tidyverse)
+#remotes::install_github("mnsentinellakes/mnsentinellakes") #need to install mnsentinellakes from github
 library(mnsentinellakes) #fixing lake IDs
 library(lubridate) #for dates
 library(ggplot2) #for plotting
-library(here)
+library(here) #for reading in data
 
 library(lme4) #for lmms
 library(lmerTest) #hypothesis testing lmms
 library(emmeans) #post-hoc tests for lme4
+library(broom.mixed) #for outputting model coefficients
 
 knitr::opts_chunk$set(echo = TRUE)
 select <- dplyr::select #if you happen to have MASS loaded you need to reassign the select function
@@ -22,42 +24,49 @@ select <- dplyr::select #if you happen to have MASS loaded you need to reassign 
 
 ## Alum Lakes
 
-The following is a list of alum treatments used in this analysis. A comma between dates indicate that the treatments are handled as separate events for this analysis; a slash indicates they are handled as one event.
+The following is a list of alum treatments used in this analysis. A comma between dates indicates that the treatments are analyzed as separate events; a slash indicates they are analyzed as one event.
 
 
 ```{r Alum Lakes}
 #load in alum treated lakes
-LakeList <- read.csv(here("Data/Alum_Lakes_Table_v2.csv")) %>%
+LakeList <- read.csv(here("Data/Alum_Lakes_Table.csv")) %>%
   mutate(DOW = fixlakeid(DOW))%>%
   arrange(Year)
 
-kable(LakeList %>% select (Name, AvgDepth.m, DOW, Year))
+kable(LakeList %>% select (Name, Depth.Cat, Year))
 ```
 
-## Data Set Up
+Data Set Up
 
 Only data from June 1 - Sept 15 are included.
 
-Treatments that happen with at least 4 summers in between are analysed as separate treatments. Treatments with 3 or fewer summers in between are analysed as one treatment, omitting the data in between the two applications. In these cases, the pre-treatment window ends when the first dose was applied and the post-treatment window begins when the second dose was applied.
+Treatments that happen with at least 4 summers in between alum applications are analyzed separately. Treatments with 3 or fewer summers in between are analyzed as one treatment, omitting the data in between the two applications. In these cases, the pre-treatment window ends when the first dose was applied and the post-treatment window begins when the second dose was applied.
 
 
 ```{r, echo = FALSE}
 #import time series data
-Timeseries <- read.csv(here("Data/Timeseries_v6.csv")) %>%
-  mutate(DOW = fixlakeid(DOW)) %>%
-  filter(Julian >= 152 & Julian <= 258) #Jun 1 to Sept 15 window
+Timeseries <- read.csv(here("Data/Timeseries_v6_forEDI.csv")) %>%
+  mutate(DOW = fixlakeid(DOW),
+         sampleDate = as.Date(sampleDate),
+         sampleYear = year(sampleDate),
+         Julian = yday(sampleDate),
+         day = day(sampleDate)) %>%
+  filter(Julian >= 152 & Julian <= 259) %>% #Jun 1 to Sept 15 window with extra days on leap years
+  filter(!(Julian == 152 & day == 31)) %>% #remove May 31st from leap years
+  filter(!(Julian == 259 & day == 16)) %>% #remove Sept 16 from non-leap years
+  select(-day, -Julian)
 ```
 
 ```{r, echo = FALSE}
 #load in alum dose dates
-DoseDates <- read.csv(here("Data/Alum_Dose_Dates_forpub_v3.csv")) %>%
+DoseDates <- read.csv(here("Data/Alum_Dose_Dates.csv")) %>%
   mutate(DOW = fixlakeid(DOW),
          Pre.Lower = mdy(Pre.Lower), 
          Pre.Upper = mdy(Pre.Upper), 
          Post.Lower = mdy(Post.Lower), 
          Post.Upper = mdy(Post.Upper))
 
-parameters <- c("TP.mg_L", "TN.mg_L", "TKN.mg_L", "secchi.m", "chla.Pcorr.ug_L", "chla.nonPcorr.ug_L", "NOX.mg_L")
+parameters <- c("TP.mg_L", "TN.mg_L", "TKN.mg_L", "secchi.m", "chla.Pcorr.ug_L", "chla.nonPcorr.ug_L", "NOX.mg_L", "NH4.mg_L")
 
 AlumTimeseries_long <- Timeseries %>%
   filter(DOW %in% DoseDates$DOW) %>%
@@ -94,16 +103,15 @@ for(i in 1:dim(DoseDates)[1]) {
 
 }
 
-AlumData_long = do.call(rbind, AlumList) %>%
-  filter(!(DOW == "27004800" & (parameter == "chla.Pcorr.ug_L" | parameter == "chla.nonPcorr.ug_L"))) #remove chla from this lake for reasons detailed in the QAQC section
+AlumData_long = do.call(rbind, AlumList) %>% #make some changes for specific data or treatment date issues
+  filter(!(DOW == "27004800" & (parameter == "chla.Pcorr.ug_L" | parameter == "chla.nonPcorr.ug_L"))) %>% #remove chla from this lake 
+  filter(!(DOW == "10000200" & (sampleDate == "2020-06-03" | sampleDate == "2020-06-18"))) #alum treatment happened on 20-Jun-2020
 
-
-#the long version of the data is helpful for identifying dataSource but I'm going to remove this and some other metadata when I make the data wide
-
+#Make the data wide for analysis
 #There are a small number of sampling events that have both TKN and TN data from 27001600 and 27003100. I'll use the TN data for these points
 
 AlumData <- AlumData_long %>%
-  select(-dataSource, -county, -Month) %>%
+  select(-dataSource, -county) %>%
   pivot_wider(names_from = parameter,
               values_from = c(result, gtlt)) %>%
   rename_with(~str_replace(., 'result_', '')) %>%
@@ -208,7 +216,7 @@ AlumData %>%
 ```
 A summary of the above small data problems:
 10008400 only has one sample (chem and secchi) for 2009 (pre year #1), no other usable years
-19002500 in 2021 only has 2 TP dates and 3 TKN (same as 2020, the other usable post-alum year) but slightly better secchi data than 2020
+19002500 in 2021 only has 2 TP, 3 TKN, and 3 chla (same as 2020, the other usable post-alum year) but slightly better secchi data than 2020
 27104501 has no secchi data in 2019, but 2020 has almost no chem data, and I'd rather be missing a year of secchi data than chem
 27004800 is missing chla data for 2020 and only has late season points for 2019 so this would skew post-chla really high
         as opposed to pushing post dates to 2021 and 2022 I'm just going to exclude this lake from the chla analysis, which I've gone back up in the code and done earlier
@@ -218,24 +226,21 @@ Otherwise, all other treatments/years should have 4 data points at least. This i
 ------------------------------------------------------------------
 Now let's go through and do this for all the control lakes for the BACI analysis
 
-I initially identified 62006701 (dose date 1997) and 19002300 (dose date 2004) as candidates for control lakes but I removed them because they have really high N and were making the controls lakes too different from the alum lakes as a group.
 
 ```{r, echo = FALSE}
 #load in control dose dates
-ControlDates <- read.csv(here("Data/Alum_Simulation_Dates_forpub.csv")) %>%
+ControlDates <- read.csv(here("Data/Alum_Simulation_Dates.csv")) %>%
   mutate(DOW = fixlakeid(DOW),
          Pre.Lower = mdy(Pre.Lower), 
          Pre.Upper = mdy(Pre.Upper), 
          Post.Lower = mdy(Post.Lower), 
          Post.Upper = mdy(Post.Upper))
 
-parameters <- c("TP.mg_L", "TN.mg_L", "TKN.mg_L", "secchi.m", "chla.Pcorr.ug_L", "chla.nonPcorr.ug_L", "NOX.mg_L")
+parameters <- c("TP.mg_L", "TN.mg_L", "TKN.mg_L", "secchi.m", "chla.Pcorr.ug_L", "chla.nonPcorr.ug_L", "NOX.mg_L", "NH4.mg_L")
 
 ControlTimeseries_long <- Timeseries %>%
   filter(DOW %in% ControlDates$DOW) %>%
   filter(parameter %in% parameters) 
-
-
 
 #subset data needed for analysis and add treatment metadata
 
@@ -265,10 +270,8 @@ for(i in 1:dim(ControlDates)[1]) {
 ControlData_long = do.call(rbind, ControlList) %>%
   filter(!(parameter == "TP.mg_L" & result == 0)) #remove TP = 0 data point
 
-#the long version of the data is helpful for identifying dataSource but I'm going to remove this and some other metadata when I make the data wide
-
 ControlData <- ControlData_long %>%
-  select(-dataSource, -county, -Month) %>%
+  select(-dataSource, -county) %>%
   pivot_wider(names_from = parameter,
               values_from = c(result, gtlt)) %>%
   rename_with(~str_replace(., 'result_', '')) 
@@ -375,7 +378,7 @@ Time for a little more data manipulation! Let's join these two data frames, clea
 
 ```{r}
 AllData <- rbind(AlumData, ControlData) %>%
-  mutate(N.mg_L = case_when(!is.na(TN.mg_L) ~ TN.mg_L,
+  mutate(N.mg_L = case_when(!is.na(TN.mg_L) ~ TN.mg_L, #Merge TN and TKN into one column
                             is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ TKN.mg_L,
                             is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA),
          Ntype = case_when(!is.na(TN.mg_L) ~ "TN.mg_L",
@@ -386,7 +389,7 @@ AllData <- rbind(AlumData, ControlData) %>%
                             is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA)) %>%
   select(-TN.mg_L, -TKN.mg_L, -gtlt_TN.mg_L, -gtlt_TKN.mg_L) %>%
   
-  mutate(chla.ug_L = case_when(!is.na(chla.Pcorr.ug_L) ~ chla.Pcorr.ug_L,
+  mutate(chla.ug_L = case_when(!is.na(chla.Pcorr.ug_L) ~ chla.Pcorr.ug_L, #use pheophytin corrected chla when available
                             is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ chla.nonPcorr.ug_L,
                             is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA),
          pheo.corr = case_when(!is.na(chla.Pcorr.ug_L) ~ 1,
@@ -397,15 +400,18 @@ AllData <- rbind(AlumData, ControlData) %>%
                             is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA)) %>%
   select(-chla.Pcorr.ug_L, -chla.nonPcorr.ug_L, -gtlt_chla.Pcorr.ug_L, -gtlt_chla.nonPcorr.ug_L ) %>%
   
-  mutate(secchi.m = case_when(secchi.m == 0 ~ NA,
+  mutate(secchi.m = case_when(secchi.m == 0 ~ NA,   #remove 0s in secchi dataset
                               secchi.m != 0 ~ secchi.m)) %>%
   
   mutate(TP.log = log(TP.mg_L),
          N.log = log(N.mg_L),
          chla.log = log(chla.ug_L),
-         NP.ratio = (N.mg_L / TP.mg_L) * (30.974/14.007),
+         NP.ratio = (N.mg_L / TP.mg_L) * (30.974/14.007), #molar TN:TP ratio
          NP.log = log(NP.ratio)) %>%
   mutate(treatment = factor(treatment, levels = c("pre", "post")))
+
+
+#separate data into two separate dataframes for the shortterm and longterm analyses
 
 PrePostData <- AllData %>%
   filter(!is.na(treatment))
@@ -438,6 +444,30 @@ Chla.BDL <- BDL.dedup %>%
   
 ```
 
+---------------------------------------------------------
+NOX
+Let's look at short term pre/post
+
+```{r}
+NOX <- PrePostData %>% 
+  filter(!is.na(NOX.mg_L)) %>%
+  mutate(NOX.frac = NOX.mg_L/N.mg_L)
+
+#how many treatments have NOX data
+NOX.treat <- NOX %>% filter(evertreat == 1) %>% group_by(DOWApp, treatment) %>% summarise(n = n())
+
+#what detection limits are actually reported
+DL <- NOX %>% filter(gtlt_NOX.mg_L > 0) %>% group_by(NOX.mg_L) %>% summarise(n = n())
+
+#how many data points are marked as BDL
+NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(gtlt_NOX.mg_L > 0), total = n())
+
+#how much is < 0.03, the most common detection limit
+NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(NOX.mg_L <= 0.03 | gtlt_NOX.mg_L > 0), total = n())
+
+#Essentially, there's no evidence for widespread increases in NOX standing pools like in deeper, oligotrophic systems 
+
+```
 
 ----------------------------------
 SHORT-TERM ANALYSIS
@@ -454,7 +484,7 @@ TP BACI
 
 TP_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(TP.mg_L)), 
                       log(TP.mg_L) ~ treatment*evertreat2 + (1|DOWApp))
-summary(TP_BACI_model)
+tidy(TP_BACI_model)
 
 TP.emm <- confint(emmeans(TP_BACI_model, ~ evertreat2*treatment, type = 'response'))
 
@@ -478,24 +508,6 @@ ggplot(TP.emm, aes(x=factor(treatment), y=response,
 
 ggsave("TP_BACI.pdf", path = here("Plots"))
 
-
-#plot of the actual data instead of model fits
-
-#ggplot(PrePostData %>% filter(!is.na(TP.mg_L)), aes(x=factor(treatment), y=TP.mg_L, fill=factor(evertreat))) + 
-#  scale_y_log10()+
-#  geom_boxplot(width = 0.4, show.legend = F) +
-#  theme_classic() +
-#  ylab("Total Phosphorus (mg/L)") +
-#  xlab("") +
-#  stat_summary(
-#    fun = median,
-#    geom = 'line',
-#    aes(group = factor(evertreat), color = factor(evertreat)),
-#    show.legend = F,
-#    position = dodge,
-#    linetype = "dotted",
-#    size = 1)
-
 ```
 
 TN BACI
@@ -503,7 +515,7 @@ TN BACI
 
 N_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(N.mg_L)), 
                       log(N.mg_L) ~ treatment*evertreat2 + (1|DOWApp))
-summary(N_BACI_model)
+tidy(N_BACI_model)
 
 N.emm <- confint(emmeans(N_BACI_model, ~ evertreat2*treatment, type = 'response'))
 
@@ -526,21 +538,6 @@ ggplot(N.emm, aes(x=factor(treatment), y=response,
   scale_x_discrete(labels=c('Before', 'After'))
 
 ggsave("TN_BACI.pdf", path = here("Plots"))
-  
-#ggplot(PrePostData %>% filter(!is.na(N.mg_L)), aes(x=factor(treatment), y=N.mg_L, fill=factor(evertreat))) + 
-#  scale_y_log10()+
-#  geom_boxplot(width = 0.4, show.legend = F) +
-#  theme_classic() +
-#  ylab("Nitrogen (mg/L)") +
-#  xlab("") +
-#  stat_summary(
-#    fun = median,
-#    geom = 'line',
-#    aes(group = factor(evertreat), color = factor(evertreat)),
-#    show.legend = F,
-#    position = dodge,
-#    linetype = "dotted",
-#    size = 1)
 
 ```
 
@@ -550,7 +547,7 @@ chla BACI
 
 CHLA_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(chla.ug_L)), 
                       log(chla.ug_L) ~ treatment*evertreat2 + (1|DOWApp))
-summary(CHLA_BACI_model)
+tidy(CHLA_BACI_model)
 
 chla.emm <- confint(emmeans(CHLA_BACI_model, ~ evertreat2*treatment, type = 'response'))
 
@@ -573,22 +570,7 @@ ggplot(chla.emm, aes(x=factor(treatment), y=response,
   scale_y_continuous(expand = c(0,0), limits = c(0,25)) +
   scale_x_discrete(labels=c('Before', 'After'))
 
-ggsave("CHLA_BACI.jpg", path = here("Plots"))
-
-#ggplot(PrePostData %>% filter(!is.na(chla.ug_L)), aes(x=factor(treatment), y=chla.ug_L, fill=factor(evertreat))) + 
-#  scale_y_log10()+
-#  geom_boxplot(width = 0.4, show.legend = F) +
-#  theme_classic() +
-#  ylab("Chlorophyll-a (ug/L)") +
-#  xlab("") +
-#  stat_summary(
-#    fun = median,
-#    geom = 'line',
-#    aes(group = factor(evertreat), color = factor(evertreat)),
-#    show.legend = F,
-#    position = dodge,
-#    linetype = "dotted",
-#    size = 1)
+ggsave("CHLA_BACI.pdf", path = here("Plots"))
 
 ```
 
@@ -597,7 +579,7 @@ Secchi BACI
 
 Secchi_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(secchi.m)), 
                       secchi.m ~ treatment*evertreat2 + (1|DOWApp))
-summary(Secchi_BACI_model)
+tidy(Secchi_BACI_model)
 
 secchi.emm <- confint(emmeans(Secchi_BACI_model, ~ evertreat2*treatment))
 
@@ -619,7 +601,7 @@ ggplot(secchi.emm, aes(x=factor(treatment), y=emmean,
   scale_y_continuous(expand = c(0,0), limits = c(0,3)) +
   scale_x_discrete(labels=c('Before', 'After'))
 
-#ggsave("Secchi_BACI.jpg", path = here("Plots"))
+ggsave("Secchi_BACI.pdf", path = here("Plots"))
   
 
 ```
@@ -629,7 +611,7 @@ NP BACI
 
 NP_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(NP.ratio)), 
                       log(NP.ratio) ~ treatment*evertreat2 + (1|DOWApp))
-summary(NP_BACI_model)
+tidy(NP_BACI_model)
 
 np.emm <- confint(emmeans(NP_BACI_model, ~ evertreat2*treatment, type = 'response'))
 
@@ -651,22 +633,7 @@ ggplot(np.emm, aes(x=factor(treatment), y=response,
   scale_y_continuous(expand = c(0,0), limits = c(25,70))+
   scale_x_discrete(labels=c('Before', 'After'))
 
-ggsave("NP_BACI.jpg", path = here("Plots"))
-
-#ggplot(PrePostData %>% filter(!is.na(NP.ratio)), aes(x=factor(treatment), y=NP.ratio, fill=factor(evertreat))) + 
-#  scale_y_log10()+
-#  geom_boxplot(width = 0.4, show.legend = F) +
-#  theme_classic() +
-#  ylab("NP ratio") +
-#  xlab("") +
-#  stat_summary(
-#    fun = median,
-#    geom = 'line',
-#    aes(group = factor(evertreat), color = factor(evertreat)),
-#    show.legend = F,
-#    position = dodge,
-#    linetype = "dotted",
-#    size = 1)
+ggsave("NP_BACI.pdf", path = here("Plots"))
 
 ```
 
@@ -713,47 +680,39 @@ LongData2 <- LongData %>%
   mutate(plotYear = case_when(preLong == 1 ~ preYear - 9,
                              postLong == 1 ~ postYear))
 
-LongData3 <- LongData2 %>%
-  filter(DOW == "70005400" | DOW == "62005400" | DOW == "27019200" | DOW == "27003900" | DOW == "27003502" | DOW == "27003100" |
-           DOW == "27001600" | DOW == "10000200") #only lakes mean depth >5m
-
 ```
 
 ```{r, fig.width = 4, fig.height=3}
 P_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L)), 
                       log(TP.mg_L) ~ modYear*preLong + (1|DOWApp))
-summary(P_lt_model2)
+tidy(P_lt_model2)
 
 N_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L)), 
                       log(N.mg_L) ~ modYear*preLong + (1|DOWApp))
-summary(N_lt_model2)
+tidy(N_lt_model2)
 
 Secchi_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(secchi.m)), 
                       secchi.m ~ modYear*preLong + (1|DOWApp))
-summary(Secchi_lt_model2)
+tidy(Secchi_lt_model2)
 
 Chla_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(chla.ug_L)), 
                       log(chla.ug_L) ~ modYear*preLong + (1|DOWApp))
-summary(Chla_lt_model2)
+tidy(Chla_lt_model2)
 
 NP_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(NP.ratio)), 
                       log(NP.ratio) ~ modYear*preLong + (1|DOWApp))
-summary(NP_lt_model2)
+tidy(NP_lt_model2)
 
+#inspect these for significant slopes for pre and post
+emt.TP <- test(emtrends(P_lt_model2, "preLong", var = "modYear"))
+emt.TN <- test(emtrends(N_lt_model2, "preLong", var = "modYear"))
+emt.NP <- test(emtrends(NP_lt_model2, "preLong", var = "modYear"))
+emt.chla <- test(emtrends(Chla_lt_model2, "preLong", var = "modYear"))
+emt.Secchi <- test(emtrends(Secchi_lt_model2, "preLong", var = "modYear"))
 
-N_lt_model3 <- lmer(data = LongData3 %>% filter(!is.na(N.mg_L)),  #mean depth > 5m
-                      log(N.mg_L) ~ modYear*preLong + (1|DOWApp))
-summary(N_lt_model3)
+```
 
-TP.emt <- test(emtrends(P_lt_model2, "preLong", var = "modYear"))
-TN.emt <- test(emtrends(N_lt_model2, "preLong", var = "modYear"))
-NP.emt <- test(emtrends(NP_lt_model2, "preLong", var = "modYear"))
-chla.emt <- test(emtrends(Chla_lt_model2, "preLong", var = "modYear"))
-Secchi.emt <- test(emtrends(Secchi_lt_model2, "preLong", var = "modYear"))
-TN.emt.deep <- test(emtrends(N_lt_model3, "preLong", var = "modYear"))
-
-###-------------------------------------
-
+```{r, fig.width = 3.5, fig.height=3}
 
 newdat3 <- data.frame(modYear = c(seq(1, 8, 1), seq(1, 8, 1)),
                      preLong = c(1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0),
@@ -764,8 +723,6 @@ newdat3$TN <- exp(predict(N_lt_model2, newdata = newdat3, re.form = NA))
 newdat3$NP <- exp(predict(NP_lt_model2, newdata = newdat3, re.form = NA))
 newdat3$Secchi <- predict(Secchi_lt_model2, newdata = newdat3, re.form = NA)
 newdat3$chla <- exp(predict(Chla_lt_model2, newdata = newdat3, re.form = NA))
-newdat3$TN.deep <- exp(predict(N_lt_model3, newdata = newdat3, re.form = NA))
-
 
 
 ggplot() + 
@@ -781,10 +738,10 @@ ggplot() +
             show.legend = F,
             lwd = 1.2) +
   scale_color_manual(values=c(I("black"), I("#005AB5"))) +
-  ylab("Total Nitrogen (mg N/L)") +
+  ylab("Total Nitrogen (mg/L)") +
   xlab("Years Relative to Alum Treatment") 
 
-#ggsave("LTb_TN.jpg", path = here("Plots"))
+ggsave("LT_TN.pdf", path = here("Plots"))
 
 
 ggplot() + 
@@ -800,11 +757,11 @@ ggplot() +
             show.legend = F,
             lwd = 1.2) +
   scale_color_manual(values=c(I("#DC3220"), I("black"))) +
-  ylab("Total Phosphorus (mg P/L)") +
+  ylab("Total Phosphorus (mg/L)") +
   xlab("Years Relative to Alum Treatment") 
 
 
-#ggsave("LTb_TP.jpg", path = here("Plots"))
+ggsave("LT_TP.pdf", path = here("Plots"))
 
 
 ggplot() + 
@@ -823,7 +780,7 @@ ggplot() +
   ylab("TN:TP") +
   xlab("Years Relative to Alum Treatment") 
 
-#ggsave("LTb_NP.jpg", path = here("Plots"))
+ggsave("LT_NP.pdf", path = here("Plots"))
 
 my_y_title <- expression(paste("Chlorophyll ", italic("a"), " (ug/L)"))
 ggplot() + 
@@ -842,7 +799,7 @@ ggplot() +
   ylab(my_y_title) +
   xlab("Years Relative to Alum Treatment") 
 
-#ggsave("LTb_chla.jpg", path = here("Plots"))
+ggsave("LT_chla.pdf", path = here("Plots"))
 
 
 ggplot() + 
@@ -861,61 +818,18 @@ ggplot() +
   ylab("Secchi Depth (m)") +
   xlab("Years Relative to Alum Treatment") 
 
-#ggsave("LTb_Secchi.jpg", path = here("Plots"))
+ggsave("LT_Secchi.pdf", path = here("Plots"))
 
-
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(N.mg_L)), 
-               aes(x=factor(plotYear), y=N.mg_L, fill=factor(preLong)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("grey", "white")) +
-  geom_line(data = newdat3, 
-            aes(group = preLong, x = as.factor(plotYear), y = TN.deep, 
-                colour = as.factor(preLong)),
-            show.legend = F,
-            lwd = 1.2) +
-  scale_color_manual(values=c(I("black"), I("#005AB5"))) +
-  ylab("Total Nitrogen (mg N/L)") +
-  xlab("Years Relative to Alum Treatment") 
-
-#ggsave("LTb_TN_deep.jpg", path = here("Plots"))
 
 ```
 
 
-
----------------------------------------------------------
-NOX
-Let's look at short term pre/post
-
-```{r}
-NOX <- PrePostData %>% 
-  filter(!is.na(NOX.mg_L)) %>%
-  mutate(NOX.frac = NOX.mg_L/N.mg_L)
-
-#how many treatments have NOX data
-NOX.treat <- NOX %>% filter(evertreat == 1) %>% group_by(DOWApp, treatment) %>% summarise(n = n())
-
-#what detection limits are actually reported
-DL <- NOX %>% filter(gtlt_NOX.mg_L > 0) %>% group_by(NOX.mg_L) %>% summarise(n = n())
-
-#how many data points are marked as BDL
-NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(gtlt_NOX.mg_L > 0), total = n())
-
-#how much is < 0.03, the most common detection limit
-NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(NOX.mg_L <= 0.03 | gtlt_NOX.mg_L > 0), total = n())
-
-#Essentially, there's no evidence for widespread increases in NOX standing pools like in deeper, oligotrophic systems 
-
-```
 
 -------------------------------------------
 COMPARING CHANGE IN N AND P
 
 
-linear models looking at how changes in TP and Secchi depth explain the change in TN
+linear models looking at how changes in TP and Secchi depth explain the change in TN, and how these relationships are moderated by lake depth
 
 ```{r, fig.width = 4, fig.height = 3}
 PrePost_Summary <- PrePostData %>%
@@ -943,201 +857,142 @@ PrePost_Molar <- PrePostData %>%
          TN.mol = (TN/14.007)*1000,
          NP.mol = TN.mol/TP.mol) 
 
-#single regression
 
-abs.change <- lm(data = PrePost_Summary %>% filter(TN_del != "NaN"), TN_del ~ TP_del)
-perc.change <- lm(data = PrePost_Summary %>% filter(TN_perc != "NaN"), TN_perc ~ TP_perc)
-
-summary(abs.change)  #R2 = 0.3753
-summary(perc.change)   #R2 = 0.3214
-
-abs.change.S <- lm(data = PrePost_Summary %>% filter(TN_del != "NaN"), TN_del ~ S_del)
-perc.change.S <- lm(data = PrePost_Summary %>% filter(TN_perc != "NaN"), TN_perc ~ S_del)
-
-summary(abs.change.S)  #R2 = 0.1487
-summary(perc.change.S)   #R2 = 0.3017
-
-#multiple regression
-
-abs.change.TP.S <- lm(data = PrePost_Summary %>% filter(TN_del != "NaN"), TN_del ~ TP_del + S_del)
-perc.change.TP.S <- lm(data = PrePost_Summary %>% filter(TN_perc != "NaN"), TN_perc ~ TP_perc + S_del)
-
-summary(abs.change.TP.S) #R2 = 0.4884
-summary(perc.change.TP.S) #R2 = 0.4226
-
-#TP and Secchi
-#Percent change in TP is correlated with the change in Secchi Depth which could create multicolinearity problems
-
-TP.abs.S <- lm(data = PrePost_Summary %>% filter(TN_del != "NaN"), S_del ~ TP_del)
-TP.perc.S <- lm(data = PrePost_Summary %>% filter(TN_del != "NaN"), S_del ~ TP_perc)
-
-summary(TP.abs.S) #p = 0.5
-summary(TP.perc.S) #p = 0.001
-
-#library(car)
-#vif(abs.change.S)    #multicolinearity isn't too strong for either of these. 
-#vif(perc.change.S)   # VIF < 1.3 for both models
-
-#Calculate residuals on the model for later plots
-PrePost_Resid <- PrePost_Summary %>%
-  filter(!is.na(TN_perc))
-
-PrePost_Resid$resid.p <- residuals(lm(PrePost_Resid$TN_perc ~ PrePost_Resid$TP_perc))
-PrePost_Resid$resid.a <- residuals(lm(PrePost_Resid$TN_del ~ PrePost_Resid$TP_del))
-
-resid.S.p <- lm(data = PrePost_Resid, resid.p ~ S_del) #0.0311
-resid.S.a <- lm(data = PrePost_Resid, resid.a ~ S_del) #0.0105
-
-summary(resid.S.p) #p = 0.0127, R2 = 0.1134
-summary(resid.S.a) #p = 0.00197, R2 = 0.1794
-
-#mol.change <- lm(data = PrePost_Summary %>% filter(TN.delmol != "NaN"), TN.delmol ~ TP.delmol)
-#summary(mol.change) #the average loss is about 20 mol N per mol P, close to expected if most loss is phyto biomass
-
-#avPlots(abs.change.S)
-#avPlots(perc.change.S)
+#add morphometry data
+PrePost_Depth <- PrePost_Summary %>%
+  mutate(DOW = substr(DOWApp, start = 1, stop = 8))
+  
+PrePost_Depth <- left_join(PrePost_WS, LakeList, by = "DOW")
+PrePost_Depth$Depth.Cat <- factor(PrePost_WS$Depth.Cat, levels = c("Shallow","Deep"))
 
 ```
 
 
 Percent change plots
 
-```{r, fig.width = 3, fig.height = 3}
-  
-#plots 
+```{r, fig.width=3, fig.height=3}
+#percent change models and plots
 
-#percent change in TN vs Secchi 
-ggplot(PrePost_Summary %>% filter(TN_del != "NaN"), aes(x = S_del, y = TN_perc)) +
-  geom_point() +
-  theme_classic() +
+TP.Litt.p <- lm(data = PrePost_Depth, TN_perc ~ TP_perc*Depth.Cat)
+S.Litt.p <- lm(data = PrePost_Depth, TN_perc ~ S_del*Depth.Cat)
+TP.S.Litt.p <- lm(data = PrePost_Depth, S_del ~ TP_perc*Depth.Cat)
+tidy(TP.Litt.p)
+tidy(S.Litt.p)
+tidy(TP.S.Litt.p)
+
+test(emtrends(TP.Litt.p, "Depth.Cat", var = "TP_perc"))
+test(emtrends(S.Litt.p, "Depth.Cat", var = "S_del"))
+test(emtrends(TP.S.Litt.p, "Depth.Cat", var = "TP_perc"))
+
+
+ggplot(PrePost_Depth, aes(x = TP_perc, y = TN_perc, color = Depth.Cat, shape = Depth.Cat)) +
+  scale_color_manual(values = c("#00BA38", "#619CFF")) +
+  scale_shape_manual(values = c(17,19)) +
   geom_hline(yintercept = 0, lty = "dashed") +
   geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  ylab("Percent Change in TN") + 
-  xlab("Change in Secchi Depth (m)")
-#ggsave("TN_Secchi.jpg", path = here("Plots"))
-
-#percent change
-ggplot(PrePost_Summary %>% filter(TN_perc != "NaN"), aes(x = TP_perc, y = TN_perc)) +
-  coord_equal() +
-  geom_point() +
+  geom_point(show.legend = F) +
   theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", color = "black", se = F)  +
-  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  geom_smooth(method = "lm", se = F, show.legend = F) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
   xlab("Percent Change in TP") + 
   ylab("Percent Change in TN")
+ggsave("Litt_TN_TP.pdf", path = here("Plots"))
 
-#ggsave("Perc_Change.jpg", path = here("Plots"))
-
-#residual of percent change in TN model vs Secchi 
-ggplot(PrePost_Resid %>% filter(TN_del != "NaN"), aes(x = S_del, y = resid.p)) +
-  geom_point() +
-  theme_classic() +
+ggplot(PrePost_Depth, aes(x = S_del, y = TN_perc, color = Depth.Cat, shape = Depth.Cat)) +
+  scale_color_manual(values = c("#00BA38", "#619CFF")) +
+  scale_shape_manual(values = c(17,19)) +
   geom_hline(yintercept = 0, lty = "dashed") +
   geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_Resid %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Resid %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  geom_point(show.legend = F) +
+  theme_classic() +
+  geom_smooth(method = "lm", se = F, show.legend = F) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
   xlab("Change in Secchi Depth (m)") + 
-  ylab("Residual")
-#ggsave("Secchi_Resid.jpg", path = here("Plots"))
+  ylab("Percent Change in TN")
+ggsave("Litt_TN_Secchi.pdf", path = here("Plots"))
 
+ggplot(PrePost_Depth, aes(y = S_del, x = TP_perc, color = Depth.Cat, shape = Depth.Cat)) +
+  scale_color_manual(values = c("#00BA38", "#619CFF")) +
+  scale_shape_manual(values = c(17,19)) +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  geom_vline(xintercept = 0, lty = "dashed") +
+  geom_point(show.legend = F) +
+  theme_classic() +
+  geom_smooth(method = "lm", se = F, show.legend = F) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  ylab("Change in Secchi Depth (m)") + 
+  xlab("Percent Change in TP")
+ggsave("Litt_TP_Secchi.pdf", path = here("Plots"))
 ```
 
-Absolute change plots
+Absolute change models and plots (not included in publication)
 
-```{r,  fig.width = 3, fig.height = 3}
-#abs change in TN vs Secchi 
-ggplot(PrePost_Summary %>% filter(TN_del != "NaN"), aes(x = S_del, y = TN_del)) +
-  geom_point() +
-  theme_classic() +
+```{r, fig.width=3, fig.height=3}
+#percent change models and plots
+
+TP.Litt.a <- lm(data = PrePost_Depth, TN_del ~ TP_del*Depth.Cat)
+S.Litt.a <- lm(data = PrePost_Depth, TN_del ~ S_del*Depth.Cat)
+TP.S.Litt.a <- lm(data = PrePost_Depth, S_del ~ TP_del*Depth.Cat)
+tidy(TP.Litt.a)
+tidy(S.Litt.a)
+tidy(TP.S.Litt.a)
+
+test(emtrends(TP.Litt.a, "Depth.Cat", var = "TP_del"))
+test(emtrends(S.Litt.a, "Depth.Cat", var = "S_del"))
+test(emtrends(TP.S.Litt.a, "Depth.Cat", var = "TP_del"))
+
+
+ggplot(PrePost_Depth, aes(x = TP_del, y = TN_del, color = Depth.Cat, shape = Depth.Cat)) +
+  scale_color_manual(values = c("#00BA38", "#619CFF")) +
+  scale_shape_manual(values = c(17,19)) +
   geom_hline(yintercept = 0, lty = "dashed") +
   geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  ylab("Change in TN (mg/L)") + 
-  xlab("Change in Secchi Depth (m)")
-#ggsave("TN_Secchi_abs.jpg", path = here("Plots"))
-
-#absolute change in mg/L 
-ggplot(PrePost_Summary %>% filter(TN_del != "NaN"), aes(x = TP_del, y = TN_del)) +
-  geom_point() +
+  geom_point(show.legend = F) +
   theme_classic() +
+  geom_smooth(method = "lm", se = F, show.legend = F) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  xlab("Absolute Change in TP") + 
+  ylab("Absolute Change in TN")
+#ggsave("Litt_TN_TP.pdf", path = here("Plots"))
+
+ggplot(PrePost_Depth, aes(x = S_del, y = TN_del, color = Depth.Cat, shape = Depth.Cat)) +
+  scale_color_manual(values = c("#00BA38", "#619CFF")) +
+  scale_shape_manual(values = c(17,19)) +
   geom_hline(yintercept = 0, lty = "dashed") +
   geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  xlab("Change in TP (mg P/L)") + 
-  ylab("Change in TN (mg N/L)")
-
-#ggsave("Abs_Change.jpg", path = here("Plots"))
-
-
-#residual of abs change in TN model vs Secchi 
-ggplot(PrePost_Resid %>% filter(TN_del != "NaN"), aes(x = S_del, y = resid.a)) +
-  geom_point() +
+  geom_point(show.legend = F) +
   theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_Resid %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Resid %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  geom_smooth(method = "lm", se = F, show.legend = F) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
   xlab("Change in Secchi Depth (m)") + 
-  ylab("Residual")
-#ggsave("Secchi_Resid_abs.jpg", path = here("Plots"))
+  ylab("Absolute Change in TN")
+#ggsave("Litt_TN_Secchi.pdf", path = here("Plots"))
 
-
-
+ggplot(PrePost_Depth, aes(y = S_del, x = TP_del, color = Depth.Cat, shape = Depth.Cat)) +
+  scale_color_manual(values = c("#00BA38", "#619CFF")) +
+  scale_shape_manual(values = c(17,19)) +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  geom_vline(xintercept = 0, lty = "dashed") +
+  geom_point(show.legend = F) +
+  theme_classic() +
+  geom_smooth(method = "lm", se = F, show.legend = F) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  ylab("Change in Secchi Depth (m)") + 
+  xlab("Absolute Change in TP")
+#ggsave("Litt_TP_Secchi.pdf", path = here("Plots"))
 ```
 
 
 Stoichiometry plots and calculations
 
 ```{r, fig.width = 4, fig.height = 3}
-# Change in N:P ratio with lines connecting points for each lake
-#ggplot(PrePost_Molar %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
-#  coord_equal() +
-#  scale_y_log10() +
-#  scale_x_log10() +
-#  geom_point(aes(shape = treatment)) +
-#  scale_shape_manual(values = c(21, 19)) + 
-#  geom_line(aes(group = DOWApp)) +
-#  theme_classic()
            
-#plot with molar ratios
-#a = c(0.001,0.01)
-#b = c(0.02,0.2)
-a = c(1,10)
-b = c(20,200)
-Hecky_low <- data.frame(a, b)
-
-#c = c(0.0005,0.01)
-#d = c(0.025,0.5)
-c = c(0.5,10)
-d = c(25,500)
-Hecky_high <- data.frame(c, d)
-
-# plot change in N:P with Hecky 50 and 20 stoich lines
-ggplot(PrePost_Molar %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
-  coord_equal() +
-  scale_y_log10() +
-  scale_x_log10() +
-  geom_point(aes(shape = treatment), show.legend = F) +
-  scale_shape_manual(values = c(21, 19)) + 
-  geom_line(data = Hecky_low, aes(x = a, y = b)) +
-  geom_line(data = Hecky_high, aes(x = c, y = d))+
-  theme_classic() +
-   xlab("Total Phosphorus (umol/L)") + 
-  ylab("Total Nitrogen (umol/L)")
-
-#ggsave("NP_Shift.jpg", path = here("Plots"))
-
-
 #test the change in N:P
 PrePost_Molar_wide <- PrePost_Molar %>%
   select(DOWApp, treatment, NP.mol) %>%
@@ -1157,24 +1012,7 @@ PrePost_WSr <- PrePost_WSr %>%
          TP.post.mol = (TP_post/30.974)*1000,
          TN.post.mol = (TN_post/14.007)*1000)
 
-ggplot(PrePost_WSr) + 
-  coord_equal() +
-  scale_y_log10() +
-  scale_x_log10() +
-  geom_line(data = Hecky_low, aes(x = a, y = b)) +
-  geom_line(data = Hecky_high, aes(x = c, y = d))+
-  geom_point(data = PrePost_WSr %>% filter(shallow == T), aes(x = TP.pre.mol, y = TN.pre.mol), 
-             color = "#619CFF", shape = 21, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(shallow == F), aes(x = TP.pre.mol, y = TN.pre.mol), 
-             color = "#00BA38", shape = 2, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(shallow == T), aes(x = TP.post.mol, y = TN.post.mol), 
-             color = "#619CFF", shape = 19, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(shallow == F), aes(x = TP.post.mol, y = TN.post.mol), 
-             color = "#00BA38", shape = 17, show.legend = F) +
-  theme_classic() +
-   xlab("Total Phosphorus (umol/L)") + 
-  ylab("Total Nitrogen (umol/L)")
-ggsave("Stoich_shallow.pdf", path = here("Plots"))
+
 
 shallow <- PrePost_WSr %>% filter(shallow == F)
 deep <- PrePost_WSr %>% filter(shallow == T)
@@ -1185,850 +1023,42 @@ mean(deep$NP_pre)
 mean(deep$NP_post)
 
 
-```
+#plot with molar ratios
+#a = c(0.001,0.01)
+#b = c(0.02,0.2)
+a = c(1,10)
+b = c(20,200)
+Hecky_low <- data.frame(a, b)
 
+#c = c(0.0005,0.01)
+#d = c(0.025,0.5)
+c = c(0.5,10)
+d = c(25,500)
+Hecky_high <- data.frame(c, d)
 
---------------------------------------------
-Add in watershed and lake morphometry parameters
-
-```{r, fig.width=3, fig.height=3}
-PrePost_WS <- PrePost_Summary %>%
-  mutate(DOW = substr(DOWApp, start = 1, stop = 8))
-  
-PrePost_WS <- left_join(PrePost_WS, LakeList, by = "DOW")
-
-PrePost_WS_long <- gather(PrePost_WS, key="param", value="value", c("AvgDepth.m", "WS.Lake", "Littoral"))
-
-#percent change models
-TP.depth.p <- lm(data = PrePost_WS, TP_perc ~ AvgDepth.m) #NS
-TN.depth.p <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_perc ~ AvgDepth.m) #NS
-TP.WS.p <- lm(data = PrePost_WS, TP_perc ~ WS.Lake) #NS
-TN.WS.p <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_perc ~ WS.Lake) #0.0645
-TP.Lit.p <- lm(data = PrePost_WS, TP_perc ~ Littoral) #NS
-TN.Lit.p <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_perc ~ Littoral) #NS
-
-#summary(TP.depth.p)
-#summary(TN.depth.p)
-#summary(TP.WS.p)
-#summary(TN.WS.p)
-#summary(TP.Lit.p)
-#summary(TN.Lit.p)
-
-#abs change models
-TP.depth.a <- lm(data = PrePost_WS, TP_del ~ AvgDepth.m) #NS
-TN.depth.a <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_del ~ AvgDepth.m) #NS
-TP.WS.a <- lm(data = PrePost_WS, TP_del ~ WS.Lake) #NS
-TN.WS.a <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_del ~ WS.Lake) #p = 0.0819
-TP.Lit.a <- lm(data = PrePost_WS, TP_del ~ Littoral) #0.0528
-TN.Lit.a <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_del ~ Littoral) #NS
-
-#summary(TP.depth.a)
-#summary(TN.depth.a)
-#summary(TP.WS.a)
-#summary(TN.WS.a)
-#summary(TP.Lit.a)
-#summary(TN.Lit.a)
-
-
-#multiple regression with morphometry
-
-depth.a <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_del ~ TP_del + AvgDepth.m)
-depth.p <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_perc ~ TP_perc + AvgDepth.m)
-WS.a <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_del ~ TP_del + WS.Lake)
-WS.p <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_perc ~ TP_perc + WS.Lake)
-Lit.a <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_del ~ TP_del + Littoral)
-Lit.p <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_perc ~ TP_perc + Littoral)
-
-summary(depth.a) #p = 0.14
-summary(depth.p) #R2 = 0.25
-summary(WS.a) #p = 0.015
-summary(WS.p) #p = 0.008
-summary(Lit.a) #p = 0.0198
-summary(Lit.p) #p = 0.0346
-
-#secchi and WS
-WS.S.a <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_del ~ TP_del + S_del + WS.Lake)
-WS.S.p <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), TN_perc ~ TP_perc + S_del + WS.Lake)
-
-#are change in secchi and WA:LA related?
-WS.S <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), S_del ~ WS.Lake)
-summary(WS.S)
-
-#are WA:LA and littoral related?
-WS.Lit <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), Littoral ~ WS.Lake)
-summary(WS.Lit)
-
-#are secchi and littoral related?
-Lit.S <- lm(data = PrePost_WS %>% filter(TN_del != "NaN"), S_del ~ Littoral)
-summary(Lit.S)
-
-#Change in clarity vs WA:LA
-ggplot(PrePost_WSr %>% filter(TN_del != "NaN"), aes(x = WS.Lake, y = S_del)) +
-  geom_point() +
+# plot change in N:P with Hecky 50 and 20 stoich lines
+ggplot(PrePost_Depth) + 
+  coord_equal() +
+  scale_y_log10() +
+  scale_x_log10() +
+  geom_line(data = Hecky_low, aes(x = a, y = b)) +
+  geom_line(data = Hecky_high, aes(x = c, y = d))+
+  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == T), aes(x = TP.pre.mol, y = TN.pre.mol), 
+             color = "#619CFF", shape = 21, show.legend = F) +
+  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == F), aes(x = TP.pre.mol, y = TN.pre.mol), 
+             color = "#00BA38", shape = 2, show.legend = F) +
+  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == T), aes(x = TP.post.mol, y = TN.post.mol), 
+             color = "#619CFF", shape = 19, show.legend = F) +
+  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == F), aes(x = TP.post.mol, y = TN.post.mol), 
+             color = "#00BA38", shape = 17, show.legend = F) +
   theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  #geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("WA:LA") + 
-  ylab("Change in Secchi Depth (m)")
-ggsave("WS_Secchi.jpg", path = here("Plots"))
-
-#Change in clarity vs %littoral. shallow lakes, smaller increase in secchi, but maybe that's because they go clear to the bottom so the potential increase in clarity is smaller??
-ggplot(PrePost_WSr %>% filter(TN_del != "NaN"), aes(x = Littoral, y = S_del)) +
-  geom_point() +
-  #geom_point(aes(shape = maxed.bool), show.legend = F) +
-  #scale_shape_manual(values = c(19, 21)) + 
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  #geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("% Littoral") + 
-  ylab("Change in Secchi Depth (m)")
-ggsave("Lit_Secchi.pdf", path = here("Plots"))
-
-#for completeness, WA:LA vs % lit
-ggplot(PrePost_WSr %>% filter(TN_del != "NaN"), aes(x = WS.Lake, y = Littoral)) +
-  geom_point() +
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  #geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("WA:LA") + 
-  ylab("% Littoral")
-ggsave("Lit_Secchi.pdf", path = here("Plots"))
-
-#change in secchi vs mean depth
-ggplot(PrePost_WSr %>% filter(TN_del != "NaN"), aes(x = AvgDepth.m, y = S_del)) +
-  geom_point() +
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  #geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("WA:LA") + 
-  ylab("% Littoral")
-
-
-#N residual models
-PrePost_WSr <- PrePost_Resid %>%
-  mutate(DOW = substr(DOWApp, start = 1, stop = 8))
-  
-PrePost_WSr <- left_join(PrePost_WSr, LakeList, by = "DOW")
-PrePost_WSr_long <- gather(PrePost_WSr, key="param", value="value", c("AvgDepth.m", "WS.Lake", "Littoral"))
-
-PrePost_WSr <- PrePost_WSr %>%
-  mutate(maxed = maxDepth - Secchi_post) %>%
-  mutate(maxed.bool = maxed < 1.00,
-         litt.bool = Littoral < 80) %>%
-  mutate(illuminate_pre = Secchi_pre/AvgDepth.m,
-         illuminate_post = Secchi_post/AvgDepth.m,
-         illuminate_del = illuminate_post - illuminate_pre)
-
-resid.depth.p <- lm(data = PrePost_WSr, resid.p ~ AvgDepth.m) #NS
-resid.WS.p <- lm(data = PrePost_WSr, resid.p ~ WS.Lake) #0.0078
-resid.Lit.p <- lm(data = PrePost_WSr, resid.p ~ Littoral) #0.0354
-resid.depth.a <- lm(data = PrePost_WSr, resid.a ~ AvgDepth.m) #NS
-resid.WS.a <- lm(data = PrePost_WSr, resid.a ~ WS.Lake) #0.0139
-resid.Lit.a <- lm(data = PrePost_WSr, resid.a ~ Littoral) #0.300
-
-#summary(resid.depth.p) 
-summary(resid.WS.p)
-summary(resid.Lit.p)
-#summary(resid.depth.a) 
-#summary(resid.WS.a)
-summary(resid.Lit.a)
-
-resid.S.p.shallow <- lm(data = PrePost_WSr %>% filter(Littoral > 90), resid.p ~ S_del)
-summary(resid.S.p.shallow)
-resid.ill.p <- lm(data = PrePost_WSr, resid.p ~ illuminate_del)
-summary(resid.ill.p)
-
-#residual of percent change in TN model vs secchi with maxed out 
-ggplot(PrePost_WSr %>% filter(Littoral > 90), aes(x = S_del, y = resid.p)) +
-  geom_point() +
-  #scale_shape_manual(values = c(19, 21)) + 
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  #geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Residual")
-#ggsave("Lit_Resid.pdf", path = here("Plots"))
-
-
-
-#residual of percent change in TN model vs WA:LA 
-ggplot(PrePost_WSr %>% filter(TN_del != "NaN"), aes(x = WS.Lake, y = resid.p)) +
-  geom_point() +
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  #geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("WA:LA") + 
-  ylab("Residual")
-#ggsave("WS_Resid.jpg", path = here("Plots"))
-
-#residual of percent change in TN model vs change in illumination
-ggplot(PrePost_WSr %>% filter(TN_del != "NaN"), aes(x = illuminate_del, y = resid.p)) +
-  geom_point(aes(color = litt.bool)) +
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  #geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("change in illumination") + 
-  ylab("Residual")
-#ggsave("WS_Resid.jpg", path = here("Plots"))
-
-#residual of percent change in TN model vs Littoral 
-ggplot(PrePost_WSr %>% filter(TN_del != "NaN"), aes(x = Littoral, y = resid.p)) +
-  geom_point() +
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  #geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("% Littoral Area") + 
-  ylab("Residual")
-ggsave("Lit_Resid.pdf", path = here("Plots"))
-
-#residual of percent change in TN model vs secchi with maxed out 
-ggplot(PrePost_WSr %>% filter(TN_del != "NaN"), aes(x = S_del, y = resid.p)) +
-  geom_point(aes(shape = litt.bool, color = maxed.bool)) +
-  scale_shape_manual(values = c(19, 21)) + 
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  #geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Residual")
-#ggsave("Lit_Resid.pdf", path = here("Plots"))
-
-
-ggplot(PrePost_WSr %>% filter(TN_del != "NaN"), aes(x = TP_perc, y = TN_perc)) +
-  geom_point(aes(color = litt.bool), show.legend = F) +
-  #scale_shape_manual(values = c(21, 19)) + 
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Percent change in TP") + 
-  ylab("Percent change in TN")
-ggsave("Lit_TN_TP_95.pdf", path = here("Plots"))
-
-ggplot(PrePost_WSr, aes(x = S_del, y = resid.p, group = litt.bool)) +
-  geom_point(aes(color = litt.bool), show.legend = F) +
-  #scale_shape_manual(values = c(21, 19)) + 
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(data = PrePost_WSr %>% filter(litt.bool == F), method = "lm", se = F, color = "#00BFC4") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Residual")
-ggsave("Lit_Resid_95.pdf", path = here("Plots"))
-
-PrePost_WSr <- PrePost_WSr %>%
-  mutate(Lit.frac = Littoral/100)
-
-
-test <- lm(data = PrePost_WSr, TN_perc ~ TP_perc*Littoral)
-summary(test)
-
-interact_plot(test, pred = TP_perc, modx = Littoral, plot.points = T)
-
-test2 <- lm(data = PrePost_WSr, TN_perc ~ TP_perc*litt.bool)
-summary(test2)
-
-interact_plot(test2, pred = TP_perc, modx = litt.bool, plot.points = T)
-
-test3 <- lm(data = PrePost_WSr, TN_perc ~ TP_perc*Littoral)
-summary(test3)
-
-PrePost_WSr$test.r <- residuals(lm(PrePost_WSr$TN_perc ~ PrePost_WSr$TP_perc*PrePost_WSr$litt.bool))
-
-ggplot(PrePost_WSr, aes(x = TP_del, y = S_del)) +
-  geom_point() +
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Percent Change TP") + 
-  ylab("Change in Secchi Depth (m)")
-
-
-ggplot(PrePost_WSr, aes(x = S_del, y = TN_del, group = litt.bool)) +
-  geom_point(aes(color = litt.bool), show.legend = F) +
-  #scale_shape_manual(values = c(21, 19)) + 
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(data = PrePost_WSr %>% filter(litt.bool == F), method = "lm", se = F, color = "#F8766D") +
-  geom_smooth(data = PrePost_WSr %>% filter(litt.bool == T), method = "lm", se = F, color = "#00BFC4") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Residual")
-#ggsave("Lit_Resid_95.pdf", path = here("Plots"))
-
-
-
-
-test4 <- lm(data = PrePost_WSr, TN_perc ~ S_del*litt.bool)
-summary(test4)
-
-interact_plot(test4, pred = S_del, modx = litt.bool, plot.points = T, legend.main = F) +
-  theme(legend.position = "none")
-
-test5 <- lm(data = PrePost_WSr, TN_perc ~ TP_perc*litt.bool)
-summary(test5)
-
-interact_plot(test5, pred = TP_perc, modx = litt.bool, plot.points = T)
-
-test6 <- lm(data = PrePost_WSr, TN_del ~ S_del*litt.bool)
-summary(test6)
-
-test7 <- lm(data = PrePost_WSr, TP_del ~ S_del*litt.bool)
-summary(test7)
-
-interact_plot(test6, pred = TP_perc, modx = litt.bool, plot.points = T)
-
-```
-
-What if we look at only the 100% littoral lakes
-
-```{r, fig.width=3, fig.height=3}
-
-shallow <- PrePost_WSr %>%
-  filter(TN_del != "NaN" & Littoral == 100)
-
-multi.shallow.p <- lm(data = shallow, TN_perc ~ TP_perc + S_del)
-multi.shallow.a <- lm(data = shallow, TN_del ~ TP_del + S_del)
-
-summary(multi.shallow.a)
-summary(multi.shallow.p)
-
-shallow$resid.p <- residuals(lm(shallow$TN_perc ~ shallow$TP_perc))
-shallow$resid.a <- residuals(lm(shallow$TN_del ~ shallow$TP_del))
-
-shallow.r.p <- lm(data = shallow, resid.p ~ S_del)
-shallow.r.a <- lm(data = shallow, resid.a ~ S_del)
-
-summary(shallow.r.p)
-summary(shallow.r.a)
-
-
-ggplot(shallow, aes(x = TP_perc, y = TN_perc)) +
-  #geom_point() +
-  geom_point(aes(shape = maxed.bool), show.legend = F) +
-  scale_shape_manual(values = c(19, 21)) + 
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-#  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-#  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Percent Change in TP") + 
-  ylab("Percent Change in TN")
-ggsave("Shallow_TP_TN.pdf", path = here("Plots"))
-
-ggplot(shallow, aes(x = S_del, y = resid.p)) +
-  #geom_point() +
-  geom_point(aes(shape = maxed.bool), show.legend = F) +
-  scale_shape_manual(values = c(19, 21)) + 
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black") +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Residual")
-ggsave("Shallow_S_resid.pdf", path = here("Plots"))
-
-ggplot(shallow, aes(x = S_del, y = resid.a)) +
-  geom_point() +
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", se = F, color = "black")
-
+   xlab("Total Phosphorus (umol/L)") + 
+  ylab("Total Nitrogen (umol/L)")
+ggsave("Stoich.pdf", path = here("Plots"))
 
 
 
 ```
-
-Let's run some interaction models with % littoral and secchi
-
-```{r, fig.width=3, fig.height=3}
-
-PrePost_WSr <- PrePost_WSr %>% mutate(shallow = Littoral < 80)
-
-#not interaction models
-
-TP.p <- lm(data = PrePost_WSr, TN_perc ~ TP_perc)
-S.p <- lm(data = PrePost_WSr, TN_perc ~ S_del)
-TP.S.p <- lm(data = PrePost_WSr, S_del ~ TP_perc)
-summary(TP.p)
-summary(S.p)
-summary(TP.S.p)
-
-
-
-
-ggplot(PrePost_WSr, aes(x = TP_perc, y = TN_perc)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Percent Change in TP") + 
-  ylab("Percent Change in TN")
-ggsave("ppt_TN_TP.pdf", path = here("Plots"))
-
-ggplot(PrePost_WSr, aes(x = S_del, y = TN_perc)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Percent Change in TN")
-ggsave("ppt_TN_Secchi.pdf", path = here("Plots"))
-
-ggplot(PrePost_WSr, aes(y = S_del, x = TP_perc)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  ylab("Change in Secchi Depth (m)") + 
-  xlab("Percent Change in TP")
-ggsave("ppt_TP_Secchi.pdf", path = here("Plots"))
-
-#percent change models and plots
-
-TP.Litt.p <- lm(data = PrePost_WSr, TN_perc ~ TP_perc*shallow)
-S.Litt.p <- lm(data = PrePost_WSr, TN_perc ~ S_del*shallow)
-TP.S.Litt.p <- lm(data = PrePost_WSr, S_del ~ TP_perc*shallow)
-summary(TP.Litt.p)
-summary(S.Litt.p)
-summary(TP.S.Litt.p)
-
-PrePost_WSr$resid.int.p <- residuals(lm(PrePost_WSr$TN_perc ~ PrePost_WSr$S_del*PrePost_WSr$shallow))
-PrePost_WSr$resid.Lit.p <- residuals(lm(PrePost_WSr$S_del ~ PrePost_WSr$Littoral))
-
-TP.Litt.resid <- lm(data = PrePost_WSr, resid.int.p ~ TP_perc)
-test <- lm(data = PrePost_WSr, S_del ~ Littoral + TP_perc)
-test2 <- lm(data = PrePost_WSr %>% filter(shallow == F & TP_perc < -20), TN_perc ~ TP_perc + S_del)
-summary(TP.Litt.resid)
-summary(test)
-
-test(emtrends(TP.Litt.p, "shallow", var = "TP_perc"))
-test(emtrends(S.Litt.p, "shallow", var = "S_del"))
-test(emtrends(TP.S.Litt.p, "shallow", var = "TP_perc"))
-
-
-ggplot(PrePost_WSr, aes(x = TP_perc, y = TN_perc, color = shallow, shape = shallow)) +
-  scale_color_manual(values = c("#00BA38", "#619CFF")) +
-  scale_shape_manual(values = c(17,19)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Percent Change in TP") + 
-  ylab("Percent Change in TN")
-ggsave("TN_TP_Litt.pdf", path = here("Plots"))
-
-ggplot(PrePost_WSr, aes(x = S_del, y = TN_perc, color = shallow, shape = shallow)) +
-  scale_color_manual(values = c("#00BA38", "#619CFF")) +
-  scale_shape_manual(values = c(17,19)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Percent Change in TN")
-ggsave("TN_Secchi_Litt.pdf", path = here("Plots"))
-
-ggplot(PrePost_WSr, aes(y = S_del, x = TP_perc, color = shallow, shape = shallow)) +
-  scale_color_manual(values = c("#00BA38", "#619CFF")) +
-  scale_shape_manual(values = c(17,19)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  ylab("Change in Secchi Depth (m)") + 
-  xlab("Percent Change in TP")
-ggsave("TP_Secchi_Litt.pdf", path = here("Plots"))
-
-ggplot(PrePost_WSr, aes(x = Littoral, y = TP_perc)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F, aes(color=shallow)) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F, color = "black") +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Residual")
-ggsave("ppt_Litt_resid.pdf", path = here("Plots"))
-
-
-#absolute change models and plots
-
-TP.Litt.a <- lm(data = PrePost_WSr, TN_del ~ TP_del*shallow)
-S.Litt.a <- lm(data = PrePost_WSr, TN_del ~ S_del*shallow)
-TP.S.Litt.a <- lm(data = PrePost_WSr, S_del ~ TP_del*shallow)
-summary(TP.Litt.a)
-summary(S.Litt.a)
-summary(TP.S.Litt.a)
-
-ggplot(PrePost_WSr, aes(x = TP_del, y = TN_del, color = shallow)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in TP (mg P/L)") + 
-  ylab("Change in TN (mg N/L)")
-
-ggplot(PrePost_WSr, aes(x = S_del, y = TN_del, color = shallow)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Change in TN (mg N/L)")
-
-ggplot(PrePost_WSr, aes(y = S_del, x = TP_del, color = shallow)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_WSr %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  ylab("Change in Secchi Depth (m)") + 
-  xlab("Change in TP (mg P/L)")
-
-
-
-
-```
-
-
-
-
-A few morphometry plots for Jacques
-
-```{r, fig.width=3, fig.height=3}
-
-# TP vs WA:LA
-ggplot() +
-  geom_point(data = PrePost_WSr, aes(x = WS.Lake, y = TP_pre), shape = 21) +
-  geom_point(data = PrePost_WSr, aes(x = WS.Lake, y = TP_post), shape = 19) +
-  theme_classic() +
-   xlab("Watershed Area:Lake Area") + 
-  ylab("Total Phosphorus (mg P/L)")
-
-ggsave("pp_TP_WALA.pdf", path = here("Plots"))
-
-# TN vs WA:LA
-ggplot() +
-  geom_point(data = PrePost_WSr, aes(x = WS.Lake, y = TN_pre), shape = 21) +
-  geom_point(data = PrePost_WSr, aes(x = WS.Lake, y = TN_post), shape = 19) +
-  theme_classic() +
-   xlab("Watershed Area:Lake Area") + 
-  ylab("Total Nitrogen (mg N/L)")
-ggsave("pp_TN_WALA.pdf", path = here("Plots"))
-
-# Secchi vs WA:LA
-ggplot() +
-  geom_point(data = PrePost_WSr, aes(x = WS.Lake, y = Secchi_pre), shape = 21) +
-  geom_point(data = PrePost_WSr, aes(x = WS.Lake, y = Secchi_post), shape = 19) +
-  theme_classic() +
-   xlab("Watershed Area:Lake Area") + 
-  ylab("Secchi Depth (m)")
-ggsave("pp_S_WALA.pdf", path = here("Plots"))
-
-# TP vs %Litt
-ggplot() +
-  geom_point(data = PrePost_WSr, aes(x = Littoral, y = TP_pre), shape = 21) +
-  geom_point(data = PrePost_WSr, aes(x = Littoral, y = TP_post), shape = 19) +
-  theme_classic() +
-   xlab("% Littoral Area") + 
-  ylab("Total Phosphorus (mg P/L)")
-ggsave("pp_TP_Litt.pdf", path = here("Plots"))
-
-# TN vs %Litt
-ggplot() +
-  geom_point(data = PrePost_WSr, aes(x = Littoral, y = TN_pre), shape = 21) +
-  geom_point(data = PrePost_WSr, aes(x = Littoral, y = TN_post), shape = 19) +
-  theme_classic() +
-   xlab("% Littoral Area") + 
-  ylab("Total Nitrogen (mg N/L)")
-ggsave("pp_TN_Litt.pdf", path = here("Plots"))
-
-# Secchi vs %Litt
-ggplot() +
-  geom_point(data = PrePost_WSr, aes(x = Littoral, y = Secchi_pre), shape = 21) +
-  geom_point(data = PrePost_WSr, aes(x = Littoral, y = Secchi_post), shape = 19) +
-  theme_classic() +
-   xlab("% Littoral Area") + 
-  ylab("Secchi Depth (m)")
-ggsave("pp_S_Litt.pdf", path = here("Plots"))
-
-
-##############
-
-# change in TN vs Secchi_post
-ggplot() +
-  geom_point(data = PrePost_WSr, aes(x = Secchi_post, y = TN_perc)) +
-  theme_classic() +
-   xlab("Secchi Depth Post-Treatment (m)") + 
-  ylab("Percent Change in TN")
-
-# residual of change in TN vs Secchi_post
-
-ggplot(data = PrePost_WSr, aes(x = Secchi_post, y = resid.p)) +
-  geom_point() +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, color = "black") +
-   xlab("Secchi Depth Post-Treatment (m)") + 
-  ylab("Residual")
-
-# absolute change in TN vs Secchi_post
-ggplot() +
-  geom_point(data = PrePost_WSr, aes(x = Secchi_post, y = TN_del)) +
-  theme_classic() +
-   xlab("Secchi Depth Post-Treatment (m)") + 
-  ylab("Change in TN")
-
-# residual of abs change in TN vs Secchi_post
-
-ggplot(data = PrePost_WSr, aes(x = Secchi_post, y = resid.a)) +
-  geom_point() +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, color = "black") +
-   xlab("Secchi Depth Post-Treatment (m)") + 
-  ylab("Residual")
-
-```
-
-
-Plots for WS:LA and Avg Depth
-
-```{r, fig.width=7, fig.height=4}
-
-ggplot(PrePost_WSr_long, aes(x = value, y = resid.p)) +
-  facet_wrap(~param, scales = "free",
-             strip.position = "bottom", 
-                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
-  geom_point() +
-  theme_classic() +
-  theme(strip.background = element_blank(),
-           strip.placement = "outside") +
-  geom_smooth(data = PrePost_WSr_long %>% filter(param == "WS.Lake"), aes(x = value, y = resid.p), 
-              method = "lm", se = T, color = "black") +
-  ylab("Percent Change in TN (Residual)") +
-  xlab("")
-
-ggsave("Morph_ResidP.jpg", path = here("Plots"))
-
-#Absolute change in TN residulas vs morphometry
-#ggplot(PrePost_WSr_long, aes(x = value, y = resid.a)) +
-#  facet_wrap(~param, scales = "free",
-#             strip.position = "bottom", 
-#                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
-#  geom_point() +
-#  theme_classic() +
-#  theme(strip.background = element_blank(),
-#           strip.placement = "outside") +
-#  geom_smooth(method = "lm", se = T, color = "black") +
-#  ylab("Change in TN (Residual)") +
-#  xlab("")
-
-
-
-
-
-
-
-
-
-ggplot(PrePost_WS_long %>% filter(TN_del != "NaN"), aes(x = value, y = TP_del)) +
-  facet_wrap(~param, scales = "free",
-             strip.position = "bottom", 
-                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
-  geom_point() +
-  theme_classic() +
-  theme(strip.background = element_blank(),
-           strip.placement = "outside") +
-  ylab("Change in TP (mg/L)") +
-  xlab("")
-
-ggsave("Morph_TPabs.jpg", path = here("Plots"))
-
-ggplot(PrePost_WS_long %>% filter(TN_del != "NaN"), aes(x = value, y = TP_perc)) +
-  facet_wrap(~param, scales = "free",
-             strip.position = "bottom", 
-                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
-  geom_point() +
-  theme_classic() +
-  theme(strip.background = element_blank(),
-           strip.placement = "outside") +
-  ylab("Percent Change in TP") +
-  xlab("")
-ggsave("Morph_TPperc.jpg", path = here("Plots"))
-
-ggplot(PrePost_WS_long %>% filter(TN_del != "NaN"), aes(x = value, y = TN_del)) +
-  facet_wrap(~param, scales = "free",
-             strip.position = "bottom", 
-                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
-  geom_point() +
-  theme_classic() +
-  theme(strip.background = element_blank(),
-           strip.placement = "outside") +
-  ylab("Change in TN (mg/L)") +
-  xlab("")
-
-ggsave("Morph_TNabs.jpg", path = here("Plots"))
-
-ggplot(PrePost_WS_long %>% filter(TN_del != "NaN"), aes(x = value, y = TN_perc)) +
-  facet_wrap(~param, scales = "free",
-             strip.position = "bottom", 
-                labeller = as_labeller(c(AvgDepth.m = "Mean Depth (m)", WS.Lake = "WA:LA")) )+
-  geom_point() +
-  theme_classic() +
-  theme(strip.background = element_blank(),
-           strip.placement = "outside") +
-  ylab("Percent Change in TN") +
-  xlab("")
-
-ggsave("Morph_TNperc.jpg", path = here("Plots"))
-
-
-
-```
-
-
-```{r, fig.width=4, fig.height=4}
-ggplot(PrePost_Resid, aes(x = S_del, y = resid.p)) +
-  geom_point() +
-  theme_classic() +
-  geom_smooth(method = "lm", se = T, color = "black") +
-  ylab("Percent Change in TN (Residual)") +
-  xlab("Change in Secchi Depth")
-
-
-ggplot(PrePost_Resid, aes(x = S_del, y = resid.a)) +
-  geom_point() +
-  theme_classic() +
-  geom_smooth(method = "lm", se = T, color = "black") +
-  ylab("Absolute Change in TN (Residual)") +
-  xlab("Change in Secchi Depth (m)")
-
-
-
-#is change in clarity correlated to change in TP?
-
-ggplot(PrePost_Resid, aes(x = TP_del, y = S_del)) +
-  geom_point() +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, color = "black", lty = "dashed") +
-  xlab("Absolute Change in TP") +
-  ylab("Change in Secchi Depth (m)")
-
-ggsave("Secchi_TPabs.jpg", path = here("Plots"))
-
-ggplot(PrePost_Resid, aes(x = TP_perc, y = S_del)) +
-  geom_point() +
-  theme_classic() +
-  #geom_smooth(method = "lm", se = T, color = "black") +
-  xlab("Percent Change in TP") +
-  ylab("Change in Secchi Depth (m)")
-
-ggsave("Secchi_TPperc.jpg", path = here("Plots"))
-
-TP_Secchi.a <- lm(data = PrePost_Resid, S_del ~ TP_del)
-TP_Secchi.p <- lm(data = PrePost_Resid, S_del ~ TP_perc)
-summary(TP_Secchi.a)
-summary(TP_Secchi.p)
-
-```
-
-
-Calculate how much of the dataset is flagged as below detection
-
-```{r}
-BDL1 <- PrePostData %>%
-  select(DOW, sampleDate, TP.mg_L, gtlt_TP.mg_L, N.mg_L, gtlt_N.mg_L, chla.ug_L, gtlt_chla.ug_L)
-
-BDL2 <- LongData2 %>%
-  select(DOW, sampleDate, TP.mg_L, gtlt_TP.mg_L, N.mg_L, gtlt_N.mg_L, chla.ug_L, gtlt_chla.ug_L)
-
-BDL <- rbind(BDL1, BDL2)
-BDL.dedup <- BDL[!duplicated(BDL),]  
-
-TP.BDL <- BDL.dedup %>%
-  filter(!is.na(TP.mg_L)) %>%
-  summarise(BDL = sum(gtlt_TP.mg_L > 0), total = n())
-
-TN.BDL <- BDL.dedup %>%
-  filter(!is.na(N.mg_L)) %>%
-  summarise(BDL = sum(gtlt_N.mg_L > 0), total = n())
-
-Chla.BDL <- BDL.dedup %>%
-  filter(!is.na(chla.ug_L)) %>%
-  summarise(BDL = sum(gtlt_chla.ug_L > 0), total = n())
-
-  
-```
-
-
-
-
-
-
 
 Case study! Looking at Kohlman and Como plants
 
@@ -2232,475 +1262,6 @@ ggsave("KM_perc.jpg", path = here("Plots"))
 ```
 
 
-Exploring the long term trends of nitrogen in the control lakes
-
-```{r, echo = FALSE}
-
-ControlTrend = list()
-
-for(i in 1:dim(ControlDates)[1]) {
-  Control_subset <- ControlTimeseries_long %>%
-    filter(DOW == ControlDates$DOW[i]) %>%
-    filter(case_when(ControlDates$N.Type[i] == "TN.mg_L" ~ parameter != "TKN.mg_L",
-                     ControlDates$N.Type[i] == "TKN.mg_L" ~ parameter != "TN.mg_L"))
-    
-  ControlTrend[[i]] <- Control_subset # add subset to list
-
-}
-
-ControlTS_long = do.call(rbind, ControlTrend) %>%
-  filter(!(parameter == "TP.mg_L" & result == 0)) #remove TP = 0 data point
-
-#the long version of the data is helpful for identifying dataSource but I'm going to remove this and some other metadata when I make the data wide
-
-ControlTS <- ControlTS_long %>%
-  select(-dataSource, -county, -Month) %>%
-  pivot_wider(names_from = parameter,
-              values_from = c(result, gtlt)) %>%
-  rename_with(~str_replace(., 'result_', '')) %>%
-  mutate(N.mg_L = case_when(!is.na(TN.mg_L) ~ TN.mg_L,
-                            is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ TKN.mg_L,
-                            is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA),
-         Ntype = case_when(!is.na(TN.mg_L) ~ "TN.mg_L",
-                            is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ "TKN.mg_L",
-                            is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA),
-         gtlt_N.mg_L = case_when(!is.na(TN.mg_L) ~ gtlt_TN.mg_L,
-                            is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ gtlt_TKN.mg_L,
-                            is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA)) %>%
-  select(-TN.mg_L, -TKN.mg_L, -gtlt_TN.mg_L, -gtlt_TKN.mg_L) %>%
-  
-  mutate(chla.ug_L = case_when(!is.na(chla.Pcorr.ug_L) ~ chla.Pcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ chla.nonPcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA),
-         pheo.corr = case_when(!is.na(chla.Pcorr.ug_L) ~ 1,
-                            is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ 0,
-                            is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA),
-         gtlt_chla.ug_L = case_when(!is.na(chla.Pcorr.ug_L) ~ gtlt_chla.Pcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ gtlt_chla.nonPcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA)) %>%
-  select(-chla.Pcorr.ug_L, -chla.nonPcorr.ug_L, -gtlt_chla.Pcorr.ug_L, -gtlt_chla.nonPcorr.ug_L ) %>%
-  
-  mutate(secchi.m = case_when(secchi.m == 0 ~ NA,
-                              secchi.m != 0 ~ secchi.m)) %>%
-  
-  mutate(TP.log = log(TP.mg_L),
-         N.log = log(N.mg_L),
-         chla.log = log(chla.ug_L),
-         NP.ratio = (N.mg_L / TP.mg_L) * (30.974/14.007),
-         NP.log = log(NP.ratio))
-
-
-N_ctrl_model <- lmer(data = ControlTS %>% filter(!is.na(N.mg_L) & sampleYear >= 2000), 
-                      log(N.mg_L) ~ sampleYear + (1|DOW))
-summary(N_ctrl_model)
-
-
-#testing for trend shows decreasing trend broadly overtime in these lakes
-#both if you use the full dataset and if you filter 2010 to present  
-
-
-newdat2 <- data.frame(sampleYear = seq(2000, 2023, 1))
-
-newdat2$pred <- predict(N_ctrl_model, newdata = newdat2, re.form = NA)
-newdat2$pred2 <- exp(newdat2$pred)
-  
-  
-  ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = ControlTS %>% filter(!is.na(N.mg_L)), 
-               aes(x=factor(sampleYear), y=N.mg_L),
-               outlier.size=0.5, lwd = 0.5) 
-
-
- ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = ControlTS %>% filter(!is.na(N.mg_L) & sampleYear >= 2000), 
-               aes(x=factor(sampleYear), y=N.mg_L),
-               outlier.size=0.5, lwd = 0.5) +
-   geom_line(data = newdat2, 
-            aes(x = as.factor(sampleYear), y = pred2, group = 1),
-            show.legend = F,
-            size = 0.9) 
- 
- 
- 
- ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = ControlTS %>% filter(!is.na(TP.mg_L)), 
-               aes(x=factor(sampleYear), y=TP.mg_L),
-               outlier.size=0.5, lwd = 0.5) 
-
-
- ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = ControlTS %>% filter(!is.na(TP.mg_L) & sampleYear >= 2000), 
-               aes(x=factor(sampleYear), y=TP.mg_L),
-               outlier.size=0.5, lwd = 0.5) +
-   geom_line(data = newdat2, 
-            aes(x = as.factor(sampleYear), y = pred2, group = 1),
-            show.legend = F,
-            size = 0.9) 
-
-
-
-```
-
-
-
-Exploring the pretreatment trends 
-
-```{r, echo = FALSE}
-
-
-AlumPre = list()
-
-for(i in 1:dim(DoseDates)[1]) {
-  Alum_subset <- AlumTimeseries_long %>%
-    filter(DOW == DoseDates$DOW[i]) %>%
-    mutate(treatment = case_when(sampleYear <= DoseDates$Pre.Two[i] ~ "pre"),
-           yearPre = DoseDates$Pre.Two[i] - sampleYear + 1)
-    
-  AlumPre[[i]] <- Alum_subset # add subset to list
-
-}
-
-AlumTS_long = do.call(rbind, AlumPre) %>%
-  filter(!(DOW == "27004800" & (parameter == "chla.Pcorr.ug_L" | parameter == "chla.nonPcorr.ug_L"))) %>%
-  filter(treatment == "pre") %>%
- filter(!(DOW == "10000200"| DOW == "19005500" | DOW == "19005900" | DOW == "19006600" | 
- DOW == "19015300" | DOW == "27006700" | DOW == "70005400")) 
-#remove chla from this lake for reasons detailed in the QAQC section
-#remove lakes treated twice if desired
-
-#the long version of the data is helpful for identifying dataSource but I'm going to remove this and some other metadata when I make the data wide
-
-#There are a small number of data points that have both TKN and TN data from 27001600 and 27003100. I'll use the TN data for these points
-
-AlumTS <- AlumTS_long %>%
-  select(-dataSource, -county, -Month) %>%
-  pivot_wider(names_from = parameter,
-              values_from = c(result, gtlt)) %>%
-  rename_with(~str_replace(., 'result_', '')) %>%
-  mutate(gtlt_TKN.mg_L = case_when(!is.na(TKN.mg_L) & !is.na(TN.mg_L) ~ NA,
-                                TRUE ~ gtlt_TKN.mg_L),
-         TKN.mg_L = case_when(!is.na(TKN.mg_L) & !is.na(TN.mg_L) ~ NA,
-                                TRUE ~ TKN.mg_L)) %>%
- mutate(N.mg_L = case_when(!is.na(TN.mg_L) ~ TN.mg_L,
-                            is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ TKN.mg_L,
-                            is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA),
-         Ntype = case_when(!is.na(TN.mg_L) ~ "TN.mg_L",
-                            is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ "TKN.mg_L",
-                            is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA),
-         gtlt_N.mg_L = case_when(!is.na(TN.mg_L) ~ gtlt_TN.mg_L,
-                            is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ gtlt_TKN.mg_L,
-                            is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA)) %>%
-  select(-TN.mg_L, -TKN.mg_L, -gtlt_TN.mg_L, -gtlt_TKN.mg_L) %>%
-  
-  mutate(chla.ug_L = case_when(!is.na(chla.Pcorr.ug_L) ~ chla.Pcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ chla.nonPcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA),
-         pheo.corr = case_when(!is.na(chla.Pcorr.ug_L) ~ 1,
-                            is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ 0,
-                            is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA),
-         gtlt_chla.ug_L = case_when(!is.na(chla.Pcorr.ug_L) ~ gtlt_chla.Pcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ gtlt_chla.nonPcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA)) %>%
-  select(-chla.Pcorr.ug_L, -chla.nonPcorr.ug_L, -gtlt_chla.Pcorr.ug_L, -gtlt_chla.nonPcorr.ug_L ) %>%
-  
-  mutate(secchi.m = case_when(secchi.m == 0 ~ NA,
-                              secchi.m != 0 ~ secchi.m)) %>%
-  
-  mutate(TP.log = log(TP.mg_L),
-         N.log = log(N.mg_L),
-         chla.log = log(chla.ug_L),
-         NP.ratio = (N.mg_L / TP.mg_L) * (30.974/14.007),
-         NP.log = log(NP.ratio))
-
-
-N_pre_model <- lmer(data = AlumTS %>% filter(!is.na(N.mg_L) & yearPre <= 4), 
-                      log(N.mg_L) ~ yearPre + (1|DOW))
-summary(N_pre_model)
-
-#testing for trend shows decreasing trend broadly overtime in these lakes
-#both if you use the full dataset and if you filter 2010 to present
-
-```
-
-Comparing pre-treatment and post-treatment trends for alum treated lakes
-
-```{r, fig.width = 4, fig.height=3}
-
-DoseDates2 <- DoseDates %>%
-  filter(Back.Stop != "No")
-
-AlumList2 = list()
-
-for(i in 1:dim(DoseDates2)[1]) {
-  Alum_subset <- AlumTimeseries_long %>%
-    filter(DOW == DoseDates2$DOW[i]) %>%
-    mutate(postLong = case_when(sampleDate >= DoseDates2$Post.Lower[i] & 
-                                   sampleYear < DoseDates2$Additional.Stop[i] ~ 1,
-                                TRUE ~ 0),
-           preLong = case_when(sampleDate <= DoseDates2$Pre.Upper[i] & 
-                                   sampleYear >= DoseDates2$Back.Stop[i] ~ 1,
-                                TRUE ~ 0),
-           postYear = sampleYear - year(DoseDates2$Post.Lower[i]) + 1,
-           preYear = sampleYear - year(DoseDates2$Pre.Upper[i]) + 9,
-           evertreat = 1,
-           DOWApp = paste(DoseDates2$DOW[i], DoseDates2$Application[i], sep="")) %>%
-    filter(postLong == 1 | preLong == 1) %>%
-    filter(preYear >= 1) %>%
-    filter(case_when(DoseDates2$N.Type[i] == "TN.mg_L" ~ parameter != "TKN.mg_L",
-                     DoseDates2$N.Type[i] == "TKN.mg_L" ~ parameter != "TN.mg_L",
-                     DoseDates2$N.Type[i] == "Both" ~ parameter != "Both",
-                     is.na(DoseDates2$N.Type[i]) ~ parameter != "TKN.mg_L" & parameter != "TN.mg_L" & parameter != "NOX.mg_L"))
-    
-  AlumList2[[i]] <- Alum_subset # add subset to list
-
-}
-
-AlumData_long2 = do.call(rbind, AlumList2) %>%
-  filter(!(DOW == "27004800" & (parameter == "chla.Pcorr.ug_L" | parameter == "chla.nonPcorr.ug_L"))) #remove chla from this lake for reasons detailed in the QAQC section
-
-#the long version of the data is helpful for identifying dataSource but I'm going to remove this and some other metadata when I make the data wide
-
-#There are a small number of data points that have both TKN and TN data from 27001600 and 27003100. I'll use the TN data for these points
-
-AlumData2 <- AlumData_long2 %>%
-  select(-dataSource, -county, -Month) %>%
-  pivot_wider(names_from = parameter,
-              values_from = c(result, gtlt)) %>%
-  rename_with(~str_replace(., 'result_', '')) %>%
-  mutate(gtlt_TKN.mg_L = case_when(!is.na(TKN.mg_L) & !is.na(TN.mg_L) ~ NA,
-                                TRUE ~ gtlt_TKN.mg_L),
-         TKN.mg_L = case_when(!is.na(TKN.mg_L) & !is.na(TN.mg_L) ~ NA,
-                                TRUE ~ TKN.mg_L)) %>%
-
- mutate(N.mg_L = case_when(!is.na(TN.mg_L) ~ TN.mg_L,
-                            is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ TKN.mg_L,
-                            is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA),
-         Ntype = case_when(!is.na(TN.mg_L) ~ "TN.mg_L",
-                            is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ "TKN.mg_L",
-                            is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA),
-         gtlt_N.mg_L = case_when(!is.na(TN.mg_L) ~ gtlt_TN.mg_L,
-                            is.na(TN.mg_L) & !is.na(TKN.mg_L) ~ gtlt_TKN.mg_L,
-                            is.na(TN.mg_L) & is.na(TKN.mg_L) ~ NA)) %>%
-  select(-TN.mg_L, -TKN.mg_L, -gtlt_TN.mg_L, -gtlt_TKN.mg_L) %>%
-  
-  mutate(chla.ug_L = case_when(!is.na(chla.Pcorr.ug_L) ~ chla.Pcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ chla.nonPcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA),
-         pheo.corr = case_when(!is.na(chla.Pcorr.ug_L) ~ 1,
-                            is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ 0,
-                            is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA),
-         gtlt_chla.ug_L = case_when(!is.na(chla.Pcorr.ug_L) ~ gtlt_chla.Pcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & !is.na(chla.nonPcorr.ug_L) ~ gtlt_chla.nonPcorr.ug_L,
-                            is.na(chla.Pcorr.ug_L) & is.na(chla.nonPcorr.ug_L) ~ NA)) %>%
-  select(-chla.Pcorr.ug_L, -chla.nonPcorr.ug_L, -gtlt_chla.Pcorr.ug_L, -gtlt_chla.nonPcorr.ug_L ) %>%
-  
-  mutate(secchi.m = case_when(secchi.m == 0 ~ NA,
-                              secchi.m != 0 ~ secchi.m)) %>%
-  
-  mutate(TP.log = log(TP.mg_L),
-         N.log = log(N.mg_L),
-         chla.log = log(chla.ug_L),
-         NP.ratio = (N.mg_L / TP.mg_L) * (30.974/14.007),
-         NP.log = log(NP.ratio))
-
-
-DOWLength2 <- AlumData2 %>%
-  select(DOWApp, postYear, preYear, postLong) %>%
-  distinct() %>%
-  group_by(DOWApp, postLong) %>%
-  summarise(n = n()) %>%
-  filter(n > 3) %>%
-  group_by(DOWApp) %>%
-  summarise(n = n()) %>%
-  filter(n > 1)
-
-AlumData3 <- AlumData2 %>%
-  filter(DOWApp %in% DOWLength2$DOWApp) %>%
-  mutate(modYear = case_when(preLong == 1 ~ preYear,
-                             postLong == 1 ~ postYear))
-
-
-
-P_lt_model2 <- lmer(data = AlumData3 %>% filter(!is.na(TP.mg_L)), 
-                      log(TP.mg_L) ~ modYear*preLong + (1|DOWApp))
-summary(P_lt_model2)
-
-N_lt_model2 <- lmer(data = AlumData3 %>% filter(!is.na(N.mg_L)), 
-                      log(N.mg_L) ~ modYear*preLong + (1|DOWApp))
-summary(N_lt_model2)
-
-Secchi_lt_model2 <- lmer(data = AlumData3 %>% filter(!is.na(secchi.m)), 
-                      secchi.m ~ modYear*preLong + (1|DOWApp))
-summary(Secchi_lt_model2)
-
-Chla_lt_model2 <- lmer(data = AlumData3 %>% filter(!is.na(chla.ug_L)), 
-                      log(chla.ug_L) ~ modYear*preLong + (1|DOWApp))
-summary(Chla_lt_model2)
-
-NP_lt_model2 <- lmer(data = AlumData3 %>% filter(!is.na(NP.ratio)), 
-                      log(NP.ratio) ~ modYear*preLong + (1|DOWApp))
-summary(NP_lt_model2)
-
-TP.emt <- emtrends(P_lt_model2, "preLong", var = "modYear") 
-TP.conf <- confint(emtrends(P_lt_model2, "preLong", var = "modYear"))
-TP.test <- test(TP.emt)
-
-TN.emt <- test(emtrends(N_lt_model2, "preLong", var = "modYear"))
-NP.emt <- test(emtrends(NP_lt_model2, "preLong", var = "modYear"))
-chla.emt <- test(emtrends(Chla_lt_model2, "preLong", var = "modYear"))
-Secchi.emt <- test(emtrends(Secchi_lt_model2, "preLong", var = "modYear"))
-
-
-###-------------------------------------
-
-
-newdat3 <- data.frame(modYear = c(seq(1, 8, 1), seq(1, 8, 1)),
-                     postLong = c(0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1),
-                     postYear = seq(-7, 8, 1))
-
-newdat3$TP <- exp(predict(P_lt_model2, newdata = newdat3, re.form = NA))
-newdat3$TN <- exp(predict(N_lt_model2, newdata = newdat3, re.form = NA))
-newdat3$NP <- exp(predict(NP_lt_model2, newdata = newdat3, re.form = NA))
-newdat3$Secchi <- predict(Secchi_lt_model2, newdata = newdat3, re.form = NA)
-newdat3$chla <- exp(predict(Chla_lt_model2, newdata = newdat3, re.form = NA))
-
-
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = AlumData3 %>% filter(!is.na(N.mg_L) & postYear >= -7), 
-               aes(x=factor(postYear), y=N.mg_L, fill=factor(postLong)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("white", "grey")) +
-    geom_line(data = newdat3, 
-            aes(group = postLong, x = as.factor(postYear), y = TN),
-            show.legend = F,
-            size = 0.9) +
-  ylab("Total Nitrogen (mg N/L)") +
-  xlab("Years Relative to Alum Treatment") 
-
-ggsave("LTb_TN.jpg", path = here("Plots"))
-
-
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = AlumData3 %>% filter(!is.na(TP.mg_L) & postYear >= -7), 
-               aes(x=factor(postYear), y=TP.mg_L, fill=factor(postLong)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("white", "grey")) +
-    geom_line(data = newdat3, 
-            aes(group = postLong, x = as.factor(postYear), y = TP),
-            show.legend = F,
-            size = 0.9) +
-  ylab("Total Phosphorus (mg P/L)") +
-  xlab("Years Relative to Alum Treatment") 
-
-ggsave("LTb_TP.jpg", path = here("Plots"))
-
-
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = AlumData3 %>% filter(!is.na(NP.ratio) & postYear >= -7), 
-               aes(x=factor(postYear), y=NP.ratio, fill=factor(postLong)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("white", "grey")) +
-    geom_line(data = newdat3, 
-            aes(group = postLong, x = as.factor(postYear), y = NP),
-            show.legend = F,
-            size = 0.9) +
-  ylab("TN:TP") +
-  xlab("Years Relative to Alum Treatment") 
-
-ggsave("LTb_NP.jpg", path = here("Plots"))
-
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = AlumData3 %>% filter(!is.na(chla.ug_L) & postYear >= -7), 
-               aes(x=factor(postYear), y=chla.ug_L, fill=factor(postLong)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("white", "grey")) +
-    geom_line(data = newdat3, 
-            aes(group = postLong, x = as.factor(postYear), y = chla),
-            show.legend = F,
-            size = 0.9) +
-  ylab("Chlorophyll a (ug/L)") +
-  xlab("Years Relative to Alum Treatment") 
-
-ggsave("LTb_chla.jpg", path = here("Plots"))
-
-
-ggplot() + 
-  #scale_y_log10() +
-  theme_classic() +
-  geom_boxplot(width = 0.7, show.legend = F, data = AlumData3 %>% filter(!is.na(secchi.m) & postYear >= -7), 
-               aes(x=factor(postYear), y=secchi.m, fill=factor(postLong)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("white", "grey")) +
-    geom_line(data = newdat3, 
-            aes(group = postLong, x = as.factor(postYear), y = Secchi),
-            show.legend = F,
-            size = 0.9) +
-  ylab("Secchi Depth (m)") +
-  xlab("Years Relative to Alum Treatment") 
-
-ggsave("LTb_Secchi.jpg", path = here("Plots"))
-
-```
-
---------------------------------------------
-OLD CODE
-
-Compare pre and post treatment with all of the lakes pooled using mixed effect models:
-
-```{r TP Z-score plot, echo=FALSE}
-TP_model <- lmer(TP.log ~ treatment + (1|DOW.App) , data = TP_treated)
-summary(TP_model)
-
-TP_treated <- TP_treated %>% 
-  mutate(fit.m = predict(TP_model, re.form = NA),
-         fit.c = predict(TP_model, re.form = NULL)) %>%
-  mutate(resid = resid(TP_model))
-
-#plot of just the log transformed data
-ggplot(aes(x = treatment, y = TP.log), data = TP_treated) +
-  geom_boxplot() +
-  geom_jitter(alpha = .05) +
-  theme_classic()+
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
-  labs(y = "log(TP)", x = "")
-#ggsave("TP_alum_long.pdf")
-
-#plot of the residuals from the conditional fits added to the marginal fit
-#this basically collapses all the random intercepts
-# (https://www.azandisresearch.com/2022/12/31/visualize-mixed-effect-regressions-in-r-with-ggplot2/)
-ggplot(aes(x = treatment, y = fit.m + resid), data = TP_treated) +
-  geom_boxplot() +
-  geom_jitter(alpha = .05) +
-  theme_classic()+
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
-  labs(y = "log(TP)", x = "")
-
-
-TP_BACI_model <- lmer(TP.log ~ treatment + (1|DOW.App) + (1|sampleYear), data = TP_treated)
-summary(TP_BACI_model)
-
-TP_BACI_model_v2 <- lmer(TP.log ~ treatment + (1|DOW.App) , data = TP_treated)
-summary(TP_BACI_model_v2)
-
-```
-
-
 Notes on BACI lake selection:
 
 Washington: code 82 with 1 lake
@@ -2800,533 +1361,4 @@ Dakota_options <- Dakota %>%
 #Selected 15 lakes, put into excel
 
 ```
-
-
-
-
-
-
-old code, not currently used in paper
-```{r, fig.width=3, fig.height=3}
-
-
-#plots with BACI data
-
-ggplot(LongData2 %>% filter(!is.na(TP.mg_L)), aes(x=factor(postYear), y=TP.mg_L, fill=factor(evertreat))) + 
-  scale_y_log10() +
-  geom_boxplot(width = 0.4, show.legend = F) +
- # geom_smooth(method = "lm", 
-#              aes(group = factor(evertreat), x = postYear, y = TP.mg_L, color = factor(evertreat)),
-#              show.legend = F) +
-  theme_classic() +
-  ylab("Total Phosphorus (mg/L)") +
-  xlab("") +
-  geom_line(data = newdat, 
-            aes(group = evertreat, color = factor(evertreat), x = postYear, y = TP.mg_L),
-            show.legend = F)
-
-ggplot(LongData2 %>% filter(!is.na(N.mg_L)), aes(x=factor(postYear), y=N.mg_L, fill=factor(evertreat))) + 
-  scale_y_log10() +
-  geom_boxplot(width = 0.4, show.legend = F) +
- # geom_smooth(method = "lm", 
-#              aes(group = factor(evertreat), x = postYear, y = TP.mg_L, color = factor(evertreat)),
-#              show.legend = F) +
-  theme_classic() +
-  ylab("Nitrogen (mg/L)") +
-  xlab("") +
-  geom_line(data = newdat, 
-            aes(group = evertreat, color = factor(evertreat), x = postYear, y = N.mg_L),
-            show.legend = F)
-
-#------------------------------------
-# with pre data
-
-
-# --------------------------------
-
-#plots without BACI data
-
-
-yint.TP <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==1))$TP.mg_L)
-yint.TP2 <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1))$TP.mg_L)
-
-ggplot(LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1), aes(x=factor(postYear), y=TP.mg_L)) +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  geom_hline(yintercept = yint.TP2, linetype = "dashed") +
-  theme_classic() +
-  ylab("Total Phosphorus (mg/L)") +
-  xlab("") +
-  geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear, y = TP.mg_L), size = 1.2, color = "darkred")
-
-
-yint.N <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==1))$N.mg_L)
-yint.N2 <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1))$N.mg_L)
-
-ggplot(LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYear), y=N.mg_L)) +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  geom_hline(yintercept = yint.N2, linetype = "dashed") +
-  theme_classic() +
-  ylab("Nitrogen (mg/L)") +
-  xlab("") +
-  geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear, y = N.mg_L), size = 1.2, color = "darkred")
-
-
-```
-
-```{r}
-DOWLength <- LongData %>%
-  select(DOWApp, postYear, evertreat) %>%
-  distinct() %>%
-  group_by(DOWApp, evertreat) %>%
-  summarise(n = n()) %>%
-  filter(n > 3)
-
-LongData2 <- LongData %>%
-  filter(DOWApp %in% DOWLength$DOWApp) %>%
-  mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
-                                evertreat == 1 ~ 0)) #re-coding to increase interpretability
-```
-
-Long term response models
-
-```{r}
-#BACI models
-
-TP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L)), 
-                      log(TP.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
-summary(TP_lt_model)
-
-boot_TP <- bootMer(TP_lt_model,
-                   nsim = 100,
-                   FUN = function(x) { predict(x, newdata = newdat, re.form = NA) })
-
-test <- predict(TP_lt_model, newdata = newdat, re.form = NA)
- 
-boot_TP
-
-mean(boot_TP$t[,1]) + qnorm(p = c(0.025, 0.975)) * sd(boot_TP$t[,1])
-
-
-
-N_lt_model <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L)), 
-                      log(N.mg_L) ~ postYear*evertreat2 + (1|DOWApp))
-summary(N_lt_model)
-
-Secchi_lt_model <- lmer(data = LongData2 %>% filter(!is.na(secchi.m)), 
-                      secchi.m ~ postYear*evertreat2 + (1|DOWApp))
-summary(Secchi_lt_model)
-
-Chla_lt_model <- lmer(data = LongData2 %>% filter(!is.na(chla.ug_L)), 
-                      log(chla.ug_L) ~ postYear*evertreat2 + (1|DOWApp))
-summary(Chla_lt_model)
-
-NP_lt_model <- lmer(data = LongData2 %>% filter(!is.na(NP.ratio)), 
-                      log(NP.ratio) ~ postYear*evertreat2 + (1|DOWApp))
-summary(NP_lt_model)
-
-
-```
-
-Add the PRE data for plotting
-
-DATA PREP
-```{r}
-preData <- PrePostData %>%
-  filter(DOWApp %in% DOWLength$DOWApp) %>%
-  filter(treatment == "pre") %>%
-  mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
-                                evertreat == 1 ~ 0),
-         postYear = 0) 
-
-LongData3 <- rbind(preData, LongData2)
-
-#predict for plotting ----------------------
-
-coef_P <- fixef(TP_lt_model)
-coef_N <- fixef(N_lt_model)
-coef_S <- fixef(Secchi_lt_model)
-coef_C <- fixef(Chla_lt_model)
-coef_NP <- fixef(NP_lt_model)
-
-newdat <- data.frame(evertreat = c(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1), 
-                     postYear = c(seq(1, 8, 1),seq(1, 8, 1)),
-                     evertreat2 = c(1, 1, 1, 1, 1, 1, 1, 1,0, 0, 0, 0, 0, 0, 0, 0))
-
-test <- predict(TP_lt_model, newdata = newdat, re.form = NA)
-
-newdat <- newdat %>%
-  mutate(TP.log = coef_P[1] + postYear*coef_P[2] + evertreat2*coef_P[3] + postYear*evertreat2*coef_P[4],
-         TP.mg_L = exp(TP.log),
-         N.log = coef_N[1] + postYear*coef_N[2] + evertreat2*coef_N[3] + postYear*evertreat2*coef_N[4],
-         N.mg_L = exp(N.log),
-         chla.log = coef_C[1] + postYear*coef_C[2] + evertreat2*coef_C[3] + postYear*evertreat2*coef_C[4],
-         chla.ug_L = exp(chla.log),
-         secchi.m = coef_S[1] + postYear*coef_S[2] + evertreat2*coef_S[3] + postYear*evertreat2*coef_S[4],
-         NP.log = coef_NP[1] + postYear*coef_NP[2] + evertreat2*coef_NP[3] + postYear*evertreat2*coef_NP[4],
-         NP.ratio = exp(NP.log))
-
-newdat[nrow(newdat) + 1,] = c(0,0,1,NA,NA,NA,NA,NA,NA,NA,NA,NA)
-newdat[nrow(newdat) + 1,] = c(1,0,0,NA,NA,NA,NA,NA,NA,NA,NA,NA)
-
-#median lines for plots
-
-yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
-yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
-yint.S3 <- median((LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1 & postYear ==0))$secchi.m)
-yint.C3 <- median((LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1 & postYear ==0))$chla.ug_L)
-yint.NP3 <- median((LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1 & postYear ==0))$NP.ratio)
-```
-
-
-BACI plots
-
-```{r, fig.width = 3.5, fig.height=3}
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = TP.mg_L),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(TP.mg_L)), 
-               aes(x=factor(postYear), y=TP.mg_L, fill=factor(evertreat2)),
-               outlier.size=0.5, lwd = 0.5) +
-   scale_fill_manual(values=c("#DC3220", "#005AB5")) +
-  ylab("Total Phosphorus (mg/L)") +
-  xlab("") 
-ggsave("TP_lt_BACI.jpg", path = here("Plots"))
-
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_hline(yintercept = yint.N3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = N.mg_L),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(N.mg_L)), 
-               aes(x=factor(postYear), y=N.mg_L, fill=factor(evertreat2)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
-  ylab("Total Nitrogen (mg/L)") +
-  xlab("") 
-
-ggsave("TN_lt_BACI.jpg", path = here("Plots"))
-
-my_y_title <- expression(paste("Chlorophyll ", italic("a"), " (ug/L)"))
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_hline(yintercept = yint.C3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = chla.ug_L),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(chla.ug_L)), 
-               aes(x=factor(postYear), y=chla.ug_L, fill=factor(evertreat2)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
-  ylab(my_y_title) +
-  xlab("") 
-
-ggsave("Chla_lt_BACI.jpg", path = here("Plots"))
-
-ggplot() + 
-  scale_y_log10() +
-  theme_classic() +
-  geom_hline(yintercept = yint.NP3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = NP.ratio),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(NP.ratio)), 
-               aes(x=factor(postYear), y=NP.ratio, fill=factor(evertreat2)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
-  ylab("TN:TP") +
-  xlab("") 
-
-ggsave("NP_lt_BACI.jpg", path = here("Plots"))
-
-ggplot() + 
-  #scale_y_log10() +
-  theme_classic() +
-  geom_hline(yintercept = yint.S3, linetype = "dashed") +
-  geom_line(data = newdat, 
-            aes(group = evertreat2, color = factor(evertreat2), x = as.factor(postYear), y = secchi.m),
-            show.legend = F,
-            size = 0.9) +
-  scale_color_manual(values=c("#DC3220", "#005AB5")) +
-  geom_boxplot(width = 0.7, show.legend = F, data = LongData3 %>% filter(!is.na(secchi.m)), 
-               aes(x=factor(postYear), y=secchi.m, fill=factor(evertreat2)),
-               outlier.size=0.5, lwd = 0.5) +
-  scale_fill_manual(values=c("#DC3220", "#005AB5")) +
-  ylab("Secchi Depth (m)") +
-  xlab("") 
-
-ggsave("Secchi_lt_BACI.jpg", path = here("Plots"))
-
-```
-
-Longterm plots without the control lakes
-
-```{r, fig.width = 4, fig.height=3}
-  
-yint.TP <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==1))$TP.mg_L)
-yint.TP2 <- median((LongData2 %>% filter(!is.na(TP.mg_L) & evertreat ==1))$TP.mg_L)
-yint.TP3 <- median((LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1 & postYear ==0))$TP.mg_L)
-
-
-yint.N <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==1))$N.mg_L)
-yint.N2 <- median((LongData2 %>% filter(!is.na(N.mg_L) & evertreat ==1))$N.mg_L)
-yint.N3 <- median((LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1 & postYear ==0))$N.mg_L)
-
-ggplot(LongData3 %>% filter(!is.na(TP.mg_L) & evertreat ==1), aes(x=factor(postYear), y=TP.mg_L)) +
-  geom_hline(yintercept = yint.TP3, linetype = "dashed") +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("Total Phosphorus (mg/L)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = TP.mg_L), size = 1.2, color = "red")
-
-ggsave("TP_long.jpg", path = here("Plots"))
-
-ggplot(LongData3 %>% filter(!is.na(N.mg_L) & evertreat ==1), aes(x=factor(postYear), y=N.mg_L)) +
-  geom_hline(yintercept = yint.N3, linetype = "dashed") +
-  scale_y_log10() +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("Nitrogen (mg/L)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
-
-ggsave("TKN_long.jpg", path = here("Plots"))
-
-
-yint.S3 <- median((LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1 & postYear ==0))$secchi.m)
-ggplot(LongData3 %>% filter(!is.na(secchi.m) & evertreat ==1), aes(x=factor(postYear), y=secchi.m)) +
-  #scale_y_log10() +
-  geom_hline(yintercept = yint.S3, linetype = "dashed") +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("Secchi (m)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
-ggsave("Secchi_long.jpg", path = here("Plots"))
-
-yint.C3 <- median((LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1 & postYear ==0))$chla.ug_L)
-ggplot(LongData3 %>% filter(!is.na(chla.ug_L) & evertreat ==1), aes(x=factor(postYear), y=chla.ug_L)) +
-  scale_y_log10() +
-  geom_hline(yintercept = yint.C3, linetype = "dashed") +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("Chlorophyll a (ug/L)") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
-ggsave("Chla_long.jpg", path = here("Plots"))
-
-yint.NP3 <- median((LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1 & postYear ==0))$NP.ratio)
-ggplot(LongData3 %>% filter(!is.na(NP.ratio) & evertreat ==1), aes(x=factor(postYear), y=NP.ratio)) +
-  scale_y_log10() +
-  geom_hline(yintercept = yint.NP3, linetype = "dashed") +
-  geom_boxplot(show.legend = F) +
-  theme_classic() +
-  ylab("N:P") +
-  xlab("") 
-  #geom_line(data = newdat %>% filter(evertreat == 1), aes(x = postYear+1, y = N.mg_L), size = 1.2, color = "red")
-ggsave("NP_long.jpg", path = here("Plots"))
-
-```
-
-looking at change in N:P for both alum and non-alum sites
-
-```{r, fig.width = 4, fig.height = 3}
-PrePost_Summary2 <- PrePostData %>%
-  #filter(evertreat == 1) %>%
-  group_by(DOWApp, treatment, evertreat) %>%
-  summarise(TP = mean(TP.mg_L, na.rm = T), TN = mean(N.mg_L, na.rm = T)) %>%
-  mutate(NP = (TN/TP) * (30.974/14.007)) %>%
-  pivot_wider(names_from = treatment, values_from = c(TP, TN, NP)) %>%
-  mutate(TP_del = TP_post - TP_pre,
-         TN_del = TN_post - TN_pre,
-         NP_del = NP_post - NP_pre,
-         TP_perc = (TP_del/TP_pre)*100,
-         TN_perc = (TN_del/TN_pre)*100,
-         NP_perc = (NP_del/NP_pre)*100,
-         TP.delmol = TP_del/30.974,
-         TN.delmol = TN_del/14.007)
-
-
-PrePost_Molar2 <- PrePostData %>%
-  #filter(evertreat == 1) %>%
-  group_by(DOWApp, treatment, evertreat) %>%
-  summarise(TP = mean(TP.mg_L, na.rm = T), TN = mean(N.mg_L, na.rm = T)) %>%
-  mutate(TP.mol = (TP/30.974)*1000,
-         TN.mol = (TN/14.007)*1000,
-         NP.mol = TN.mol/TP.mol) 
-
-
-#percent change
-ggplot(PrePost_Summary2 %>% filter(evertreat == 0) %>% filter(TN_perc != "NaN"), aes(x = TP_perc, y = TN_perc)) +
-  coord_equal() +
-  geom_point() +
-  theme_classic() +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_smooth(method = "lm", color = "black", se = F)  +
- # geom_point(data = PrePost_Summary %>% filter(DOWApp == "62000600a"), color = "#DC3220", shape = 1, cex = 3.5) +
-#  geom_point(data = PrePost_Summary %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Percent Change in TP") + 
-  ylab("Percent Change in TN")
-
-
-#plot with molar ratios
-#a = c(0.001,0.01)
-#b = c(0.02,0.2)
-a = c(1,10)
-b = c(20,200)
-Hecky_low <- data.frame(a, b)
-
-#c = c(0.0005,0.01)
-#d = c(0.025,0.5)
-c = c(0.5,10)
-d = c(25,500)
-Hecky_high <- data.frame(c, d)
-
-# plot change in N:P with Hecky 50 and 20 stoich lines
-ggplot(PrePost_Molar2 %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
-  coord_equal() +
-  scale_y_log10() +
-  scale_x_log10() +
-  geom_point(data = PrePost_Molar2 %>% filter(evertreat == 1), aes(shape = treatment, colour = "black"), show.legend = F) +
-  scale_shape_manual(values = c(21, 19)) + 
-  geom_point(data = PrePost_Molar2 %>% filter(evertreat == 0), aes(shape = treatment, colour = "grey"), show.legend = F) +
-  geom_line(data = Hecky_low, aes(x = a, y = b)) +
-  geom_line(data = Hecky_high, aes(x = c, y = d))+
-  theme_classic() +
-   xlab("Total Phosphorus (umol/L)") + 
-  ylab("Total Nitrogen (umol/L)")
-
-
-ggplot(PrePost_Molar2 %>% filter(evertreat == 0) %>% filter(TN != "NaN"), aes(x = TP.mol, y = TN.mol)) +
-  coord_equal() +
-  scale_y_log10() +
-  scale_x_log10() +
-  geom_point(aes(shape = treatment), show.legend = F) +
-  scale_shape_manual(values = c(21, 19)) + 
-  geom_line(data = Hecky_low, aes(x = a, y = b)) +
-  geom_line(data = Hecky_high, aes(x = c, y = d))+
-  theme_classic() +
-   xlab("Total Phosphorus (umol/L)") + 
-  ylab("Total Nitrogen (umol/L)")
-
-
-
-#test the change in N:P for untreated lakes
-PrePost_Molar_wide2 <- PrePost_Molar2 %>%
-  filter(evertreat == 0) %>%
-  select(DOWApp, treatment, NP.mol) %>%
-  pivot_wider(names_from = treatment, values_from = NP.mol) %>%
-  filter(pre != "NaN")
-
-t.test(PrePost_Molar_wide2$pre, PrePost_Molar_wide2$post, paired = TRUE, alternative = "two.sided")
-mean(PrePost_Molar_wide2$pre)
-mean(PrePost_Molar_wide2$post)
-sum(PrePost_Molar_wide2$pre > 50)/30*100
-sum(PrePost_Molar_wide2$post > 50)/30*100
-
-
-```
-
-```{r}
-#load in alum dose dates
-DoseDates <- read.csv(here("Data/Alum_Dose_Dates_forpub_v3.csv")) %>%
-  mutate(DOW = fixlakeid(DOW),
-         Pre.Lower = mdy(Pre.Lower), 
-         Pre.Upper = mdy(Pre.Upper), 
-         Post.Lower = mdy(Post.Lower), 
-         Post.Upper = mdy(Post.Upper))
-
-parameters <- c("TP.mg_L", "TN.mg_L", "TKN.mg_L", "secchi.m", "chla.Pcorr.ug_L", "chla.nonPcorr.ug_L", "NOX.mg_L", "NH4.mg_L")
-
-AlumTimeseries_long <- Timeseries %>%
-  filter(DOW %in% DoseDates$DOW) %>%
-  filter(parameter %in% parameters) 
-
-#subset data needed for analysis and add treatment metadata
-
-AlumList = list()
-
-for(i in 1:dim(DoseDates)[1]) {
-  Alum_subset <- AlumTimeseries_long %>%
-    filter(DOW == DoseDates$DOW[i]) %>%
-    mutate(treatment = case_when(sampleYear == DoseDates$Pre.One[i] | 
-                                   sampleYear == DoseDates$Pre.Two[i] ~ "pre",
-                                 sampleYear == DoseDates$Post.One[i] | 
-                                   sampleYear == DoseDates$Post.Two[i] ~ "post"),
-           DOWApp = paste(DoseDates$DOW[i], DoseDates$Application[i], sep="")) %>%
-    filter(!is.na(treatment)) %>%
-    filter(case_when(DoseDates$N.Type[i] == "TN.mg_L" ~ parameter != "TKN.mg_L",
-                     DoseDates$N.Type[i] == "TKN.mg_L" ~ parameter != "TN.mg_L",
-                     DoseDates$N.Type[i] == "Both" ~ parameter != "Both",
-                     is.na(DoseDates$N.Type[i]) ~ parameter != "TKN.mg_L" & parameter != "TN.mg_L" & parameter != "NOX.mg_L"))
-    
-  AlumList[[i]] <- Alum_subset # add subset to list
-
-}
-
-AlumData_long = do.call(rbind, AlumList) %>%
-  filter(!(DOW == "27004800" & (parameter == "chla.Pcorr.ug_L" | parameter == "chla.nonPcorr.ug_L"))) #remove chla from this lake for reasons detailed in the QAQC section
-
-
-#the long version of the data is helpful for identifying dataSource but I'm going to remove this and some other metadata when I make the data wide
-
-#There are a small number of sampling events that have both TKN and TN data from 27001600 and 27003100. I'll use the TN data for these points
-
-AlumData <- AlumData_long %>%
-  select(-dataSource, -county, -Month) %>%
-  pivot_wider(names_from = parameter,
-              values_from = c(result, gtlt)) %>%
-  rename_with(~str_replace(., 'result_', '')) %>%
-  mutate(gtlt_TKN.mg_L = case_when(!is.na(TKN.mg_L) & !is.na(TN.mg_L) ~ NA,
-                                TRUE ~ gtlt_TKN.mg_L),
-         TKN.mg_L = case_when(!is.na(TKN.mg_L) & !is.na(TN.mg_L) ~ NA,
-                                TRUE ~ TKN.mg_L))
-
-
-#There are some duplicated sampling events in this dataset when the "pre" window of treatment "b" overlaps with the long post window of an "a" treatment. These duplicated sampling events are not used in the same analysis, and separating pre-post analysis data from the long-term analysis data (done later) fixes this
-
-
-
-NH4 <- AlumData %>% 
-  filter(!is.na(NH4.mg_L))
-
-NH4.treat <- NH4  %>% group_by(DOWApp, treatment) %>% summarise(n = n())
-#only 8 lakes have pre/post NH4
-
-#what detection limits are actually reported
-DL <- NH4 %>% filter(gtlt_NH4.mg_L > 0) %>% group_by(NH4.mg_L) %>% summarise(n = n())
-
-#how many data points are marked as BDL
-NH4 %>% group_by(treatment) %>% summarise(BDL = sum(gtlt_NH4.mg_L > 0), total = n())
-
-#how much is < 0.04, the most common detection limit
-NH4 %>% group_by(treatment) %>% summarise(BDL = sum(NH4.mg_L <= 0.04 | gtlt_NH4.mg_L > 0), total = n())
-
-#Essentially, there's no evidence for widespread increases in NOX standing pools like in deeper, oligotrophic systems 
-
-```
-
-
-
-
-
 
