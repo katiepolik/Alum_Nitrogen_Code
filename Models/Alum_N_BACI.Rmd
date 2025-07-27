@@ -453,6 +453,10 @@ NOX <- PrePostData %>%
   filter(!is.na(NOX.mg_L)) %>%
   mutate(NOX.frac = NOX.mg_L/N.mg_L)
 
+NH4 <- PrePostData %>% 
+  filter(!is.na(NH4.mg_L)) %>%
+  mutate(NH4.frac = NH4.mg_L/N.mg_L)
+
 #how many treatments have NOX data
 NOX.treat <- NOX %>% filter(evertreat == 1) %>% group_by(DOWApp, treatment) %>% summarise(n = n())
 
@@ -461,9 +465,11 @@ DL <- NOX %>% filter(gtlt_NOX.mg_L > 0) %>% group_by(NOX.mg_L) %>% summarise(n =
 
 #how many data points are marked as BDL
 NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(gtlt_NOX.mg_L > 0), total = n())
+NH4 %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(gtlt_NH4.mg_L > 0), total = n())
 
 #how much is < 0.03, the most common detection limit
 NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(NOX.mg_L <= 0.03 | gtlt_NOX.mg_L > 0), total = n())
+NH4 %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(NH4.mg_L <= 0.04 | gtlt_NH4.mg_L > 0), total = n())
 
 #Essentially, there's no evidence for widespread increases in NOX standing pools like in deeper, oligotrophic systems 
 
@@ -849,21 +855,15 @@ PrePost_Summary <- PrePostData %>%
          S_del = Secchi_post - Secchi_pre)
 
 
-PrePost_Molar <- PrePostData %>%
-  filter(evertreat == 1) %>%
-  group_by(DOWApp, treatment) %>%
-  summarise(TP = mean(TP.mg_L, na.rm = T), TN = mean(N.mg_L, na.rm = T)) %>%
-  mutate(TP.mol = (TP/30.974)*1000,
-         TN.mol = (TN/14.007)*1000,
-         NP.mol = TN.mol/TP.mol) 
-
-
 #add morphometry data
 PrePost_Depth <- PrePost_Summary %>%
-  mutate(DOW = substr(DOWApp, start = 1, stop = 8))
-  
-PrePost_Depth <- left_join(PrePost_WS, LakeList, by = "DOW")
-PrePost_Depth$Depth.Cat <- factor(PrePost_WS$Depth.Cat, levels = c("Shallow","Deep"))
+  mutate(DOW = substr(DOWApp, start = 1, stop = 8)) %>%
+  left_join(., LakeList, by = "DOW") %>%
+  mutate(Depth.Cat = factor(Depth.Cat, levels = c("Shallow","Deep"))) %>%
+  mutate(TP.pre.mol = (TP_pre/30.974)*1000,
+         TN.pre.mol = (TN_pre/14.007)*1000,
+         TP.post.mol = (TP_post/30.974)*1000,
+         TN.post.mol = (TN_post/14.007)*1000)
 
 ```
 
@@ -876,8 +876,11 @@ Percent change plots
 TP.Litt.p <- lm(data = PrePost_Depth, TN_perc ~ TP_perc*Depth.Cat)
 S.Litt.p <- lm(data = PrePost_Depth, TN_perc ~ S_del*Depth.Cat)
 TP.S.Litt.p <- lm(data = PrePost_Depth, S_del ~ TP_perc*Depth.Cat)
+summary(TP.Litt.p)
 tidy(TP.Litt.p)
+summary(S.Litt.p)
 tidy(S.Litt.p)
+summary(TP.S.Litt.p)
 tidy(TP.S.Litt.p)
 
 test(emtrends(TP.Litt.p, "Depth.Cat", var = "TP_perc"))
@@ -890,11 +893,11 @@ ggplot(PrePost_Depth, aes(x = TP_perc, y = TN_perc, color = Depth.Cat, shape = D
   scale_shape_manual(values = c(17,19)) +
   geom_hline(yintercept = 0, lty = "dashed") +
   geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
+  geom_point(show.legend = F, cex = 2) +
   theme_classic() +
   geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 4.25) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 4.25) +
   xlab("Percent Change in TP") + 
   ylab("Percent Change in TN")
 ggsave("Litt_TN_TP.pdf", path = here("Plots"))
@@ -904,11 +907,11 @@ ggplot(PrePost_Depth, aes(x = S_del, y = TN_perc, color = Depth.Cat, shape = Dep
   scale_shape_manual(values = c(17,19)) +
   geom_hline(yintercept = 0, lty = "dashed") +
   geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
+  geom_point(show.legend = F, cex = 2) +
   theme_classic() +
   geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 4.25) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 4.25) +
   xlab("Change in Secchi Depth (m)") + 
   ylab("Percent Change in TN")
 ggsave("Litt_TN_Secchi.pdf", path = here("Plots"))
@@ -918,11 +921,11 @@ ggplot(PrePost_Depth, aes(y = S_del, x = TP_perc, color = Depth.Cat, shape = Dep
   scale_shape_manual(values = c(17,19)) +
   geom_hline(yintercept = 0, lty = "dashed") +
   geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
+  geom_point(show.legend = F, cex = 2) +
   theme_classic() +
   geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 4.25) +
+  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 4.25) +
   ylab("Change in Secchi Depth (m)") + 
   xlab("Percent Change in TP")
 ggsave("Litt_TP_Secchi.pdf", path = here("Plots"))
@@ -994,16 +997,13 @@ Stoichiometry plots and calculations
 ```{r, fig.width = 4, fig.height = 3}
            
 #test the change in N:P
-PrePost_Molar_wide <- PrePost_Molar %>%
-  select(DOWApp, treatment, NP.mol) %>%
-  pivot_wider(names_from = treatment, values_from = NP.mol) %>%
-  filter(pre != "NaN")
+t.test(PrePost_Depth$NP_pre, PrePost_Depth$NP_post, paired = TRUE, alternative = "two.sided")
+mean(PrePost_Depth$NP_pre)
+mean(PrePost_Depth$NP_post)
+sum(PrePost_Depth$NP_pre > 50)/46*100
+sum(PrePost_Depth$NP_post > 50)/46*100
 
-t.test(PrePost_Molar_wide$pre, PrePost_Molar_wide$post, paired = TRUE, alternative = "two.sided")
-mean(PrePost_Molar_wide$pre)
-mean(PrePost_Molar_wide$post)
-sum(PrePost_Molar_wide$pre > 50)/46*100
-sum(PrePost_Molar_wide$post > 50)/46*100
+t.test(data = PrePost_Depth, NP_del ~ Depth.Cat, var.equal = T)
 
 
 PrePost_WSr <- PrePost_WSr %>%
@@ -1011,17 +1011,6 @@ PrePost_WSr <- PrePost_WSr %>%
          TN.pre.mol = (TN_pre/14.007)*1000,
          TP.post.mol = (TP_post/30.974)*1000,
          TN.post.mol = (TN_post/14.007)*1000)
-
-
-
-shallow <- PrePost_WSr %>% filter(shallow == F)
-deep <- PrePost_WSr %>% filter(shallow == T)
-
-
-t.test(deep$NP_pre, deep$NP_post, paired = TRUE, alternative = "two.sided")
-mean(deep$NP_pre)
-mean(deep$NP_post)
-
 
 #plot with molar ratios
 #a = c(0.001,0.01)
@@ -1043,13 +1032,13 @@ ggplot(PrePost_Depth) +
   scale_x_log10() +
   geom_line(data = Hecky_low, aes(x = a, y = b)) +
   geom_line(data = Hecky_high, aes(x = c, y = d))+
-  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == T), aes(x = TP.pre.mol, y = TN.pre.mol), 
+  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == "Deep"), aes(x = TP.pre.mol, y = TN.pre.mol), 
              color = "#619CFF", shape = 21, show.legend = F) +
-  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == F), aes(x = TP.pre.mol, y = TN.pre.mol), 
+  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == "Shallow"), aes(x = TP.pre.mol, y = TN.pre.mol), 
              color = "#00BA38", shape = 2, show.legend = F) +
-  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == T), aes(x = TP.post.mol, y = TN.post.mol), 
+  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == "Deep"), aes(x = TP.post.mol, y = TN.post.mol), 
              color = "#619CFF", shape = 19, show.legend = F) +
-  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == F), aes(x = TP.post.mol, y = TN.post.mol), 
+  geom_point(data = PrePost_Depth %>% filter(Depth.Cat == "Shallow"), aes(x = TP.post.mol, y = TN.post.mol), 
              color = "#00BA38", shape = 17, show.legend = F) +
   theme_classic() +
    xlab("Total Phosphorus (umol/L)") + 
@@ -1086,28 +1075,6 @@ Plants_CO_perc <- Plants_CO_fall %>%
   mutate(perc.veg = VEG_all/n*100,
          Year = year(SURVEY_START))
 
-#max depth of vegetation as defined as the 95th percentile of vegetated points
-Plants_CO_max <- data.frame(Year = 2015:2023,
-                            max = NA)
-
-for (i in 1:9) {
-  temp <- filter(Plants_CO_fall, Year == Plants_CO_max$Year[i] & NO_VEG_FOUND == 0) %>%
-    arrange(depth_ft)
-  
-  a <- round(dim(temp)[1]*0.95)
-  
-  if (a != 0) {
-    Plants_CO_max$max[i] <- temp$depth_ft[a]
-  }
-  
-  else{Plants_CO_max$max[i] <- NA}
-}
-
-
-#normalize to first year of data
-Plants_CO_max$norm <- Plants_CO_max$max - mean(Plants_CO_max$max[4:5], na.rm = T)
-
-
 ```
 
 
@@ -1135,32 +1102,12 @@ Plants_KM_perc <- Plants_KM_fall %>%
   mutate(perc.veg = VEG_all/n*100,
          sampleYear = year(SURVEY_START))
 
-#max depth of vegetation as defined as the 95th percentile of vegetated points
-Plants_KM_max <- data.frame(Year = 2001:2014,
-                            max = NA)
-
-for (i in 1:14) {
-  temp <- filter(Plants_KM_fall, Year == Plants_KM_max$Year[i] & NO_VEG_FOUND == 0) %>%
-    arrange(depth_ft)
-  
-  a <- round(dim(temp)[1]*0.95)
-  
-  if (a != 0) {
-    Plants_KM_max$max[i] <- temp$depth_ft[a]
-  }
-  
-  else{Plants_KM_max$max[i] <- NA}
-}
-
-#normalize to first year of data
-Plants_KM_max$norm <- Plants_KM_max$max - mean(Plants_KM_max$max[8:9], na.rm = T)
-
 ```
 
 
 Combine WQ data with plant data
 
-```{r, fig.height=7, fig.width=4}
+```{r, fig.height=6, fig.width=2.5}
 
 CO_TKN_facet <- Timeseries %>%
   filter(parameter == "TKN.mg_L" & DOW == "62005500") %>%
@@ -1172,10 +1119,10 @@ CO_TP_facet <- Timeseries %>%
   filter(sampleYear >= 2018 & sampleYear <= 2023) %>%
   select(sampleDate, sampleYear, parameter, result)
 
-#CO_Secchi_facet <- Timeseries %>%
-#  filter(parameter == "secchi.m" & DOW == "62005500") %>%
-#  filter(sampleYear >= 2016 & sampleYear <= 2023) %>%
-#  select(sampleDate, sampleYear, parameter, result)
+CO_Secchi_facet <- Timeseries %>%
+  filter(parameter == "secchi.m" & DOW == "62005500") %>%
+  filter(sampleYear >= 2018 & sampleYear <= 2023) %>%
+  select(sampleDate, sampleYear, parameter, result)
 
 #CO_chla_facet <- Timeseries %>%
 #  filter(parameter == "chla.Pcorr.ug_L" & DOW == "62005500") %>%
@@ -1189,18 +1136,21 @@ CO_plant_facet <- Plants_CO_perc %>%
   mutate(sampleDate = NA,
          parameter = "plants")
 
-CO_facet <- rbind(CO_TP_facet, CO_TKN_facet, CO_plant_facet) %>%
-  mutate(parameter = factor(parameter, c("TP.mg_L","TKN.mg_L", "plants"))) %>%
+CO_facet <- rbind(CO_TP_facet, CO_TKN_facet, CO_Secchi_facet, CO_plant_facet) %>%
+  mutate(parameter = factor(parameter, c("TP.mg_L", "secchi.m", "TKN.mg_L", "plants"))) %>%
   mutate(y_max = case_when(parameter == "TKN.mg_L" ~ 3,
                             parameter == "TP.mg_L" ~ 0.3,
+                           parameter == "secchi.m" ~ 3,
                            parameter == "plants" ~ 100)) %>%
    mutate(y_min = case_when(parameter == "TKN.mg_L" ~ 0,
-                            parameter == "TP.mg_L" ~ 0))
+                            parameter == "TP.mg_L" ~ 0,
+                            parameter == "secchi.m" ~ 0))
 
 ggplot(aes(x = sampleYear, y = result), data = CO_facet) +
   facet_wrap(~parameter, ncol = 1, scales = "free") +
   geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = CO_facet %>% filter(parameter == "TP.mg_L")) +
   geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = CO_facet %>% filter(parameter == "TKN.mg_L")) +
+  geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = CO_facet %>% filter(parameter == "secchi.m")) +
   expand_limits(y=0)+
   geom_col(data = CO_facet %>% filter(parameter == "plants"), width = 0.8, fill = "darkgreen")+
   theme_classic()+
@@ -1211,13 +1161,13 @@ ggplot(aes(x = sampleYear, y = result), data = CO_facet) +
   geom_blank(aes(y = y_max)) +
   geom_blank(aes(y = y_min))
 
-ggsave("CO_perc.jpg", path = here("Plots"))
+ggsave("Como_plants.pdf", path = here("Plots"))
 
 
 ```
 
 
-```{r, fig.height=7, fig.width=4}
+```{r, fig.height=6, fig.width=2.5}
 KM_TKN_facet <- Timeseries %>%
   filter(parameter == "TKN.mg_L" & DOW == "62000600") %>%
   filter(sampleYear >= 2008 & sampleYear <= 2013) %>%
@@ -1225,6 +1175,11 @@ KM_TKN_facet <- Timeseries %>%
   
 KM_TP_facet <- Timeseries %>%
   filter(parameter == "TP.mg_L" & DOW == "62000600") %>%
+  filter(sampleYear >= 2008 & sampleYear <= 2013) %>%
+  select(sampleDate, sampleYear, parameter, result)
+
+KM_Secchi_facet <- Timeseries %>%
+  filter(parameter == "secchi.m" & DOW == "62000600") %>%
   filter(sampleYear >= 2008 & sampleYear <= 2013) %>%
   select(sampleDate, sampleYear, parameter, result)
   
@@ -1235,18 +1190,21 @@ KM_plant_facet <- Plants_KM_perc %>%
   mutate(sampleDate = NA,
          parameter = "plants")
 
-KM_facet <- rbind(KM_TP_facet, KM_TKN_facet, KM_plant_facet) %>%
-  mutate(parameter = factor(parameter, c("TP.mg_L","TKN.mg_L", "plants"))) %>%
+KM_facet <- rbind(KM_TP_facet, KM_TKN_facet, KM_Secchi_facet, KM_plant_facet) %>%
+  mutate(parameter = factor(parameter, c("TP.mg_L","secchi.m", "TKN.mg_L", "plants"))) %>%
   mutate(y_max = case_when(parameter == "TKN.mg_L" ~ 3,
                             parameter == "TP.mg_L" ~ 0.3,
+                           parameter == "secchi.m" ~ 3,
                            parameter == "plants" ~ 100)) %>%
   mutate(y_min = case_when(parameter == "TKN.mg_L" ~ 0,
-                            parameter == "TP.mg_L" ~ 0))
+                            parameter == "TP.mg_L" ~ 0,
+                           parameter == "secchi.m" ~ 0))
 
 ggplot(aes(x = sampleYear, y = result), data = KM_facet) +
   facet_wrap(~parameter, ncol = 1, scales = "free") +
   geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TP.mg_L")) +
   geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "TKN.mg_L")) +
+   geom_boxplot(aes(group = as.factor(sampleYear), y = result), data = KM_facet %>% filter(parameter == "secchi.m")) +
   expand_limits(y=0)+
   geom_col(data = KM_facet %>% filter(parameter == "plants"), width = 0.8, fill = "darkgreen")+
   theme_classic()+
@@ -1256,7 +1214,7 @@ ggplot(aes(x = sampleYear, y = result), data = KM_facet) +
   ylab("") +
   geom_blank(aes(y = y_max)) +
   geom_blank(aes(y = y_min)) 
-ggsave("KM_perc.jpg", path = here("Plots"))
+ggsave("Kohlman_plants.pdf", path = here("Plots"))
 
 
 ```
@@ -1264,7 +1222,7 @@ ggsave("KM_perc.jpg", path = here("Plots"))
 
 Notes on BACI lake selection:
 
-Washington: code 82 with 1 lake
+Washington: code 82 with 1 alum lake
 
 ```{r}
 Washington <- AlumTimeseries %>%
@@ -1281,7 +1239,7 @@ Washington_option <- Washington %>%
 
 ```
 
-Ramsey: code 62 with 4 lakes
+Ramsey: code 62 with 4 alum lakes
 
 ```{r}
 Ramsey <- AlumTimeseries %>%
@@ -1297,7 +1255,7 @@ Ramsey_options <- Ramsey %>%
 
 ```
 
-Scott: code 70 with 2 lakes
+Scott: code 70 with 2 alum lakes
 
 ```{r}
 Scott <- AlumTimeseries %>%
@@ -1313,7 +1271,7 @@ Scott_options <- Scott %>%
 
 ```
 
-Carver: code 10 with 4 lakes
+Carver: code 10 with 3 alum lakes
 
 ```{r}
 Carver <- AlumTimeseries %>%
@@ -1330,7 +1288,7 @@ Carver_options <- Carver %>%
 
 ```
 
-Hennepin: code 27 with 15 lakes
+Hennepin: code 27 with 13 alum lakes
 
 ```{r}
 Hennepin <- AlumTimeseries %>%
@@ -1346,7 +1304,7 @@ Hennepin_options <- Hennepin %>%
 
 ```
 
-
+Dakota: code 19 with 15 alum lakes
 
 ```{r}
 Dakota <- AlumTimeseries %>%
