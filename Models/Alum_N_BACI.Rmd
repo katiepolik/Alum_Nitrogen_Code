@@ -931,67 +931,6 @@ ggplot(PrePost_Depth, aes(y = S_del, x = TP_perc, color = Depth.Cat, shape = Dep
 ggsave("Litt_TP_Secchi.pdf", path = here("Plots"))
 ```
 
-Absolute change models and plots (not included in publication)
-
-```{r, fig.width=3, fig.height=3}
-#percent change models and plots
-
-TP.Litt.a <- lm(data = PrePost_Depth, TN_del ~ TP_del*Depth.Cat)
-S.Litt.a <- lm(data = PrePost_Depth, TN_del ~ S_del*Depth.Cat)
-TP.S.Litt.a <- lm(data = PrePost_Depth, S_del ~ TP_del*Depth.Cat)
-tidy(TP.Litt.a)
-tidy(S.Litt.a)
-tidy(TP.S.Litt.a)
-
-test(emtrends(TP.Litt.a, "Depth.Cat", var = "TP_del"))
-test(emtrends(S.Litt.a, "Depth.Cat", var = "S_del"))
-test(emtrends(TP.S.Litt.a, "Depth.Cat", var = "TP_del"))
-
-
-ggplot(PrePost_Depth, aes(x = TP_del, y = TN_del, color = Depth.Cat, shape = Depth.Cat)) +
-  scale_color_manual(values = c("#00BA38", "#619CFF")) +
-  scale_shape_manual(values = c(17,19)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Absolute Change in TP") + 
-  ylab("Absolute Change in TN")
-#ggsave("Litt_TN_TP.pdf", path = here("Plots"))
-
-ggplot(PrePost_Depth, aes(x = S_del, y = TN_del, color = Depth.Cat, shape = Depth.Cat)) +
-  scale_color_manual(values = c("#00BA38", "#619CFF")) +
-  scale_shape_manual(values = c(17,19)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  xlab("Change in Secchi Depth (m)") + 
-  ylab("Absolute Change in TN")
-#ggsave("Litt_TN_Secchi.pdf", path = here("Plots"))
-
-ggplot(PrePost_Depth, aes(y = S_del, x = TP_del, color = Depth.Cat, shape = Depth.Cat)) +
-  scale_color_manual(values = c("#00BA38", "#619CFF")) +
-  scale_shape_manual(values = c(17,19)) +
-  geom_hline(yintercept = 0, lty = "dashed") +
-  geom_vline(xintercept = 0, lty = "dashed") +
-  geom_point(show.legend = F) +
-  theme_classic() +
-  geom_smooth(method = "lm", se = F, show.legend = F) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62000600a"), color = "black", shape = 1, cex = 3.5) +
-  geom_point(data = PrePost_Depth %>% filter(DOWApp == "62005500a"), color = "#DC3220", shape = 1, cex = 3.5) +
-  ylab("Change in Secchi Depth (m)") + 
-  xlab("Absolute Change in TP")
-#ggsave("Litt_TP_Secchi.pdf", path = here("Plots"))
-```
-
-
 Stoichiometry plots and calculations
 
 ```{r, fig.width = 4, fig.height = 3}
