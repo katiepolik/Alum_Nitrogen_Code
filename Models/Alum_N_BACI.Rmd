@@ -9,14 +9,11 @@ library(knitr) #for knitting! and tables
 library(tidyverse)
 #remotes::install_github("mnsentinellakes/mnsentinellakes") #need to install mnsentinellakes from github
 library(mnsentinellakes) #fixing lake IDs
-library(lubridate) #for dates
-library(ggplot2) #for plotting
 library(here) #for reading in data
 
-library(lme4) #for lmms
-library(lmerTest) #hypothesis testing lmms
+library(nlme) #for models with autocorrlation structure
+library(performance) #to check models
 library(emmeans) #post-hoc tests for lme4
-library(broom.mixed) #for outputting model coefficients
 
 knitr::opts_chunk$set(echo = TRUE)
 select <- dplyr::select #if you happen to have MASS loaded you need to reassign the select function
@@ -45,7 +42,8 @@ Treatments that happen with at least 4 summers in between alum applications are 
 
 ```{r, echo = FALSE}
 #import time series data
-Timeseries <- read.csv(here("Data/Timeseries_v6_forEDI.csv")) %>%
+#EDI: https://doi.org/10.6073/pasta/6ca2613b9bd553ff5cee1441d7c83452
+Timeseries <- read.csv(here("Data/Timeseries_v6_forEDI.csv")) %>% 
   mutate(DOW = fixlakeid(DOW),
          sampleDate = as.Date(sampleDate),
          sampleYear = year(sampleDate),
@@ -61,10 +59,8 @@ Timeseries <- read.csv(here("Data/Timeseries_v6_forEDI.csv")) %>%
 #load in alum dose dates
 DoseDates <- read.csv(here("Data/Alum_Dose_Dates.csv")) %>%
   mutate(DOW = fixlakeid(DOW),
-         Pre.Lower = mdy(Pre.Lower), 
          Pre.Upper = mdy(Pre.Upper), 
-         Post.Lower = mdy(Post.Lower), 
-         Post.Upper = mdy(Post.Upper))
+         Post.Lower = mdy(Post.Lower))
 
 parameters <- c("TP.mg_L", "TN.mg_L", "TKN.mg_L", "secchi.m", "chla.Pcorr.ug_L", "chla.nonPcorr.ug_L", "NOX.mg_L", "NH4.mg_L")
 
@@ -105,7 +101,7 @@ for(i in 1:dim(DoseDates)[1]) {
 
 AlumData_long = do.call(rbind, AlumList) %>% #make some changes for specific data or treatment date issues
   filter(!(DOW == "27004800" & (parameter == "chla.Pcorr.ug_L" | parameter == "chla.nonPcorr.ug_L"))) %>% #remove chla from this lake 
-  filter(!(DOW == "10000200" & (sampleDate == "2020-06-03" | sampleDate == "2020-06-18"))) #alum treatment happened on 20-Jun-2020
+  filter(!(DOW == "10000200" & sampleDate == "2020-06-03")) #alum treatment happened on 11-Jun-2020
 
 #Make the data wide for analysis
 #There are a small number of sampling events that have both TKN and TN data from 27001600 and 27003100. I'll use the TN data for these points
@@ -230,11 +226,7 @@ Now let's go through and do this for all the control lakes for the BACI analysis
 ```{r, echo = FALSE}
 #load in control dose dates
 ControlDates <- read.csv(here("Data/Alum_Simulation_Dates.csv")) %>%
-  mutate(DOW = fixlakeid(DOW),
-         Pre.Lower = mdy(Pre.Lower), 
-         Pre.Upper = mdy(Pre.Upper), 
-         Post.Lower = mdy(Post.Lower), 
-         Post.Upper = mdy(Post.Upper))
+  mutate(DOW = fixlakeid(DOW))
 
 parameters <- c("TP.mg_L", "TN.mg_L", "TKN.mg_L", "secchi.m", "chla.Pcorr.ug_L", "chla.nonPcorr.ug_L", "NOX.mg_L", "NH4.mg_L")
 
@@ -467,7 +459,7 @@ DL <- NOX %>% filter(gtlt_NOX.mg_L > 0) %>% group_by(NOX.mg_L) %>% summarise(n =
 NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(gtlt_NOX.mg_L > 0), total = n())
 NH4 %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(gtlt_NH4.mg_L > 0), total = n())
 
-#how much is < 0.03, the most common detection limit
+#how much is < 0.03 or < 0.04, the most common detection limits
 NOX %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(NOX.mg_L <= 0.03 | gtlt_NOX.mg_L > 0), total = n())
 NH4 %>% group_by(evertreat, treatment) %>% summarise(BDL = sum(NH4.mg_L <= 0.04 | gtlt_NH4.mg_L > 0), total = n())
 
@@ -481,18 +473,29 @@ SHORT-TERM ANALYSIS
 ```{r}
 PrePostData <- PrePostData %>%
   mutate(evertreat2 = case_when(evertreat == 0 ~ 1,
-                                evertreat == 1 ~ 0)) #re-coding the evertreat parameter to increase interpretability
-
+                                evertreat == 1 ~ 0)) %>% #re-coding the evertreat parameter to increase interpretability
+  mutate(DecimalDate = decimal_date(sampleDate),
+         TimeOfYear = DecimalDate %% 1)
+  
 ```
 
 TP BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
-TP_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(TP.mg_L)), 
-                      log(TP.mg_L) ~ treatment*evertreat2 + (1|DOWApp))
-tidy(TP_BACI_model)
+TP_BACI_nlme <- lme(log(TP.mg_L*1000) ~ treatment*evertreat2, 
+                  data = PrePostData %>% filter(!is.na(TP.mg_L)), 
+                  random = ~ 1 | DOWApp,
+                  correlation = corCAR1(form = ~ DecimalDate | DOWApp))
 
-TP.emm <- confint(emmeans(TP_BACI_model, ~ evertreat2*treatment, type = 'response'))
+#check_model(TP_BACI_nlme)
+#acf(resid(TP_BACI_nlme, type = "normalized"))
+#summary(TP_BACI_nlme)
+
+TP.emm <- confint(emmeans(TP_BACI_nlme, ~ evertreat2*treatment, type = 'response'))
+
+diffofdiff_TP <- (TP.emm$response[3] -  TP.emm$response[1]) - (TP.emm$response[4] -  TP.emm$response[2])
+perc_TP <- exp(fixef(TP_BACI_nlme)[2]) - 1
+perc_BACI_TP <- exp(fixef(TP_BACI_nlme)[4]*-1) - 1
 
 dodge <- position_dodge(width=0.25)
 ggplot(TP.emm, aes(x=factor(treatment), y=response, 
@@ -506,10 +509,10 @@ ggplot(TP.emm, aes(x=factor(treatment), y=response,
   scale_colour_manual(values=c("black","grey45")) +
   #scale_colour_manual(values=c("#DC3220", "#005AB5")) +
   theme_classic() +
-  ylab("Total Phosphorus (mg/L)") +
+  ylab("Total Phosphorus (ug/L)") +
   xlab("") +
   expand_limits(y = 0) +
-  scale_y_continuous(expand = c(0,0), limits = c(0,0.07)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,70)) +
   scale_x_discrete(labels=c('Before', 'After'))
 
 ggsave("TP_BACI.pdf", path = here("Plots"))
@@ -519,11 +522,22 @@ ggsave("TP_BACI.pdf", path = here("Plots"))
 TN BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
-N_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(N.mg_L)), 
-                      log(N.mg_L) ~ treatment*evertreat2 + (1|DOWApp))
-tidy(N_BACI_model)
+TN_BACI_nlme <- lme(log(N.mg_L) ~ treatment*evertreat2, 
+                  data = PrePostData %>% filter(!is.na(N.mg_L)), 
+                  random = ~ 1 | DOWApp,
+                  correlation = corCAR1(form = ~ DecimalDate | DOWApp))
 
-N.emm <- confint(emmeans(N_BACI_model, ~ evertreat2*treatment, type = 'response'))
+#check_model(TN_BACI_nlme)
+#acf(resid(TN_BACI_nlme, type = "normalized"))
+#summary(TN_BACI_nlme)
+
+N.emm <- confint(emmeans(TN_BACI_nlme, ~ evertreat2*treatment, type = 'response'))
+
+diffofdiff_TN <- (N.emm$response[3] -  N.emm$response[1]) - (N.emm$response[4] -  N.emm$response[2])
+perc_TN <- exp(fixef(TN_BACI_nlme)[2]) - 1
+perc_BACI_TN <- exp(fixef(TN_BACI_nlme)[4]*-1) - 1
+
+
 
 dodge <- position_dodge(width=0.25)
 ggplot(N.emm, aes(x=factor(treatment), y=response, 
@@ -551,11 +565,20 @@ ggsave("TN_BACI.pdf", path = here("Plots"))
 chla BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
-CHLA_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(chla.ug_L)), 
-                      log(chla.ug_L) ~ treatment*evertreat2 + (1|DOWApp))
-tidy(CHLA_BACI_model)
+CHLA_BACI_nlme <- lme(log(chla.ug_L) ~ treatment*evertreat2, 
+                  data = PrePostData %>% filter(!is.na(chla.ug_L)), 
+                  random = ~ 1 | DOWApp,
+                  correlation = corCAR1(form = ~ DecimalDate | DOWApp))
 
-chla.emm <- confint(emmeans(CHLA_BACI_model, ~ evertreat2*treatment, type = 'response'))
+#check_model(CHLA_BACI_nlme)
+#acf(resid(CHLA_BACI_nlme, type = "normalized"))
+
+chla.emm <- confint(emmeans(CHLA_BACI_nlme, ~ evertreat2*treatment, type = 'response'))
+
+diffofdiff_chla <- (chla.emm$response[3] -  chla.emm$response[1]) - (chla.emm$response[4] -  chla.emm$response[2])
+perc_chla <- exp(fixef(CHLA_BACI_nlme)[2]) - 1
+perc_BACI_chla <- exp(fixef(CHLA_BACI_nlme)[4]*-1) - 1
+
 
 dodge <- position_dodge(width=0.25)
 my_y_title <- expression(paste("Chlorophyll ", italic("a"), " (ug/L)"))
@@ -583,14 +606,23 @@ ggsave("CHLA_BACI.pdf", path = here("Plots"))
 Secchi BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
-Secchi_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(secchi.m)), 
-                      secchi.m ~ treatment*evertreat2 + (1|DOWApp))
-tidy(Secchi_BACI_model)
+Secchi_BACI_nlme <- lme(log(secchi.m) ~ treatment*evertreat2, 
+                  data = PrePostData %>% filter(!is.na(secchi.m)), 
+                  random = ~ 1 | DOWApp,
+                  correlation = corCAR1(form = ~ DecimalDate | DOWApp))
 
-secchi.emm <- confint(emmeans(Secchi_BACI_model, ~ evertreat2*treatment))
+#check_model(Secchi_BACI_nlme)
+#acf(resid(Secchi_BACI_nlme, type = "normalized"))
+
+secchi.emm <- confint(emmeans(Secchi_BACI_nlme, ~ evertreat2*treatment, type = 'response'))
+
+diffofdiff_secchi <- (secchi.emm$response[3] -  secchi.emm$response[1]) - (secchi.emm$response[4] -  secchi.emm$response[2])
+perc_secchi <- exp(fixef(Secchi_BACI_nlme)[2]) - 1
+perc_BACI_secchi <- exp(fixef(Secchi_BACI_nlme)[4]*-1) - 1
+
 
 dodge <- position_dodge(width=0.25)
-ggplot(secchi.emm, aes(x=factor(treatment), y=emmean, 
+ggplot(secchi.emm, aes(x=factor(treatment), y=response, 
                        color=factor(evertreat2), 
                        group = factor(evertreat2),
                        shape = factor(evertreat2))) + 
@@ -615,11 +647,20 @@ ggsave("Secchi_BACI.pdf", path = here("Plots"))
 NP BACI
 ```{r, echo=FALSE, fig.height=3, fig.width=2.5}
 
-NP_BACI_model <- lmer(data = PrePostData %>% filter(!is.na(NP.ratio)), 
-                      log(NP.ratio) ~ treatment*evertreat2 + (1|DOWApp))
-tidy(NP_BACI_model)
+NP_BACI_nlme <- lme(log(NP.ratio) ~ treatment*evertreat2, 
+                  data = PrePostData %>% filter(!is.na(NP.ratio)), 
+                  random = ~ 1 | DOWApp,
+                  correlation = corCAR1(form = ~ DecimalDate | DOWApp))
 
-np.emm <- confint(emmeans(NP_BACI_model, ~ evertreat2*treatment, type = 'response'))
+#check_model(NP_BACI_nlme)
+#acf(resid(NP_BACI_nlme, type = "normalized"))
+
+np.emm <- confint(emmeans(NP_BACI_nlme, ~ evertreat2*treatment, type = 'response'))
+
+diffofdiff_NP <- (np.emm$response[3] -  np.emm$response[1]) - (np.emm$response[4] -  np.emm$response[2])
+perc_NP <- exp(fixef(NP_BACI_nlme)[2]) - 1
+perc_BACI_NP <- exp(fixef(NP_BACI_nlme)[4]*-1) - 1
+
 
 dodge <- position_dodge(width=0.25)
 ggplot(np.emm, aes(x=factor(treatment), y=response, 
@@ -636,7 +677,7 @@ ggplot(np.emm, aes(x=factor(treatment), y=response,
   ylab("TN:TP") +
   xlab("") +
   expand_limits(y = 0) +
-  scale_y_continuous(expand = c(0,0), limits = c(25,70))+
+  scale_y_continuous(expand = c(0,0), limits = c(35,70))+
   scale_x_discrete(labels=c('Before', 'After'))
 
 ggsave("NP_BACI.pdf", path = here("Plots"))
@@ -684,66 +725,146 @@ LongData2 <- LongData %>%
   mutate(modYear = case_when(preLong == 1 ~ preYear,
                              postLong == 1 ~ postYear)) %>%
   mutate(plotYear = case_when(preLong == 1 ~ preYear - 9,
-                             postLong == 1 ~ postYear))
+                             postLong == 1 ~ postYear)) %>%
+  mutate(DOWApp2 = paste0(DOWApp,preLong),
+         DecimalDate = decimal_date(sampleDate),
+         TimeOfYear = DecimalDate %% 1,
+         modDate = modYear + TimeOfYear)
 
 ```
 
-```{r, fig.width = 4, fig.height=3}
-P_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(TP.mg_L)), 
-                      log(TP.mg_L) ~ modYear*preLong + (1|DOWApp))
-tidy(P_lt_model2)
+```{r}
+### TP model
+P_nlme <- lme(log(TP.mg_L*1000) ~ modYear*preLong, 
+                  data = LongData2 %>% filter(!is.na(TP.mg_L)), 
+                  random = ~ 1 | DOWApp2,
+                  correlation = corCAR1(form = ~ modDate | DOWApp2))
 
-N_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L)), 
-                      log(N.mg_L) ~ modYear*preLong + (1|DOWApp))
-tidy(N_lt_model2)
+#acf(resid(P_nlme, type = "normalized"))
+#check_model(P_nlme)
+#summary(P_nlme)
+#r2(P_nlme)
 
-Secchi_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(secchi.m)), 
-                      secchi.m ~ modYear*preLong + (1|DOWApp))
-tidy(Secchi_lt_model2)
+### TN model
 
-Chla_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(chla.ug_L)), 
-                      log(chla.ug_L) ~ modYear*preLong + (1|DOWApp))
-tidy(Chla_lt_model2)
+# Model that doesn't account for autocorrelation. Only for reference.
+#N_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(N.mg_L)), 
+#                      log(N.mg_L) ~ modYear*preLong + (1|DOWApp))
 
-NP_lt_model2 <- lmer(data = LongData2 %>% filter(!is.na(NP.ratio)), 
-                      log(NP.ratio) ~ modYear*preLong + (1|DOWApp))
-tidy(NP_lt_model2)
+#Plots comparing w/ and w/o corCAR term
+#pdf("acf_pre_CAR.pdf", width = 7, height = 5)
+#acf(resid(N_lt_model2), main = "Without corCAR term")
+#dev.off()
+
+#pdf("acf_post_CAR.pdf", width = 7, height = 5)
+#acf(resid(N_nlme, type = "normalized"), main = "With corCAR term")
+#dev.off()
+
+N_nlme <- lme(log(N.mg_L) ~ modYear*preLong, 
+                  data = LongData2 %>% filter(!is.na(N.mg_L)), 
+                  random = ~ 1 | DOWApp2,
+                  correlation = corCAR1(form = ~ modDate | DOWApp2))
+
+#acf(resid(N_nlme, type = "normalized"))
+#check_model(N_nlme)
+#summary(N_nlme)
+#r2(N_nlme)
+
+### Secchi model
+
+Secchi_nlme <- lme(log(secchi.m) ~ modYear*preLong, 
+                  data = LongData2 %>% filter(!is.na(secchi.m)), 
+                  random = ~ 1 | DOWApp2,
+                  correlation = corCAR1(form = ~ modDate | DOWApp2))
+
+#acf(resid(Secchi_nlme, type = "normalized"))
+#check_model(Secchi_nlme)
+#summary(Secchi_nlme)
+#r2(Secchi_nlme)
+
+### Chla model
+
+Chla_nlme <- lme(log(chla.ug_L) ~ modYear*preLong, 
+                  data = LongData2 %>% filter(!is.na(chla.ug_L)), 
+                  random = ~ 1 | DOWApp2,
+                  correlation = corCAR1(form = ~ modDate | DOWApp2))
+
+#acf(resid(Chla_nlme, type = "normalized"))
+#check_model(Chla_nlme)
+#summary(Chla_nlme)
+#r2(Chla_nlme)
+
+### NP model
+
+NP_nlme <- lme(log(NP.ratio) ~ modYear*preLong, 
+                  data = LongData2 %>% filter(!is.na(NP.ratio)), 
+                  random = ~ 1 | DOWApp2,
+                  correlation = corCAR1(form = ~ modDate | DOWApp2))
+
+#acf(resid(NP_nlme, type = "normalized"))
+#check_model(NP_nlme)
+#summary(NP_nlme)
+#r2(NP_nlme)
 
 #inspect these for significant slopes for pre and post
-emt.TP <- test(emtrends(P_lt_model2, "preLong", var = "modYear"))
-emt.TN <- test(emtrends(N_lt_model2, "preLong", var = "modYear"))
-emt.NP <- test(emtrends(NP_lt_model2, "preLong", var = "modYear"))
-emt.chla <- test(emtrends(Chla_lt_model2, "preLong", var = "modYear"))
-emt.Secchi <- test(emtrends(Secchi_lt_model2, "preLong", var = "modYear"))
+emt.TP <- test(emtrends(P_nlme, "preLong", var = "modYear"))
+TP.ltemm <- confint(emmeans(P_nlme, ~ modYear*preLong, at = list(modYear = c(1,2,3,4,5,6,7,8)), 
+                            type = 'response')) %>%
+                    mutate(plotYear = case_when(preLong == 1 ~ modYear - 9, 
+                                                TRUE ~ modYear))
+LT.diff.TP <- mean(diff(TP.ltemm$response, lag = 1, differences = 1)[1:7])
+LT.perc.TP <- exp(fixef(P_nlme)[2]) - 1
+#
+emt.TN <- test(emtrends(N_nlme, "preLong", var = "modYear"))
+TN.ltemm <- confint(emmeans(N_nlme, ~ modYear*preLong, at = list(modYear = c(1,2,3,4,5,6,7,8)), 
+                            type = 'response')) %>%
+                    mutate(plotYear = case_when(preLong == 1 ~ modYear - 9, 
+                                                TRUE ~ modYear))
+LT.diff.TN <- mean(diff(TN.ltemm$response, lag = 1, differences = 1)[1:7])
+LT.perc.TN <- exp(fixef(N_nlme)[2]) - 1
+#
+emt.NP <- test(emtrends(NP_nlme, "preLong", var = "modYear"))
+NP.ltemm <- confint(emmeans(NP_nlme, ~ modYear*preLong, at = list(modYear = c(1,2,3,4,5,6,7,8)), 
+                            type = 'response')) %>%
+                    mutate(plotYear = case_when(preLong == 1 ~ modYear - 9, 
+                                                TRUE ~ modYear))
+LT.diff.NP <- mean(diff(NP.ltemm$response, lag = 1, differences = 1)[1:7])
+LT.perc.NP <- exp(fixef(NP_nlme)[2]) - 1
+#
+emt.chla <- test(emtrends(Chla_nlme, "preLong", var = "modYear"))
+chla.ltemm <- confint(emmeans(Chla_nlme, ~ modYear*preLong, at = list(modYear = c(1,2,3,4,5,6,7,8)), 
+                            type = 'response')) %>%
+                    mutate(plotYear = case_when(preLong == 1 ~ modYear - 9, 
+                                                TRUE ~ modYear))
+LT.diff.chla <- mean(diff(chla.ltemm$response, lag = 1, differences = 1)[1:7])
+LT.perc.chla <- exp(fixef(Chla_nlme)[2]) - 1
+#
+emt.Secchi <- test(emtrends(Secchi_nlme, "preLong", var = "modYear"))
+secchi.ltemm <- confint(emmeans(Secchi_nlme, ~ modYear*preLong, at = list(modYear = c(1,2,3,4,5,6,7,8)), 
+                            type = 'response')) %>%
+                    mutate(plotYear = case_when(preLong == 1 ~ modYear - 9, 
+                                                TRUE ~ modYear))
+LT.diff.secchi <- mean(diff(secchi.ltemm$response, lag = 1, differences = 1)[1:7])
+LT.perc.secchi <- exp(fixef(Secchi_nlme)[2]) - 1
+
 
 ```
 
 ```{r, fig.width = 3.5, fig.height=3}
 
-newdat3 <- data.frame(modYear = c(seq(1, 8, 1), seq(1, 8, 1)),
-                     preLong = c(1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0),
-                     plotYear = c(seq(-8, -1, 1), seq(1, 8, 1)))
-
-newdat3$TP <- exp(predict(P_lt_model2, newdata = newdat3, re.form = NA))
-newdat3$TN <- exp(predict(N_lt_model2, newdata = newdat3, re.form = NA))
-newdat3$NP <- exp(predict(NP_lt_model2, newdata = newdat3, re.form = NA))
-newdat3$Secchi <- predict(Secchi_lt_model2, newdata = newdat3, re.form = NA)
-newdat3$chla <- exp(predict(Chla_lt_model2, newdata = newdat3, re.form = NA))
-
-
 ggplot() + 
-  scale_y_log10() +
+  scale_y_log10(guide = guide_axis_logticks()) +
   theme_classic() +
   geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(N.mg_L)), 
                aes(x=factor(plotYear), y=N.mg_L, fill=factor(preLong)),
                outlier.size=0.5, lwd = 0.5) +
   scale_fill_manual(values=c("grey", "white")) +
-  geom_line(data = newdat3, 
-            aes(group = preLong, x = as.factor(plotYear), y = TN, 
+  geom_line(data = TN.ltemm, 
+            aes(group = preLong, x = as.factor(plotYear), y = response, 
                 colour = as.factor(preLong)),
             show.legend = F,
             lwd = 1.2) +
-  scale_color_manual(values=c(I("black"), I("#005AB5"))) +
+  scale_color_manual(values=c(I("black"), I("black"))) +
   ylab("Total Nitrogen (mg/L)") +
   xlab("Years Relative to Alum Treatment") 
 
@@ -751,14 +872,14 @@ ggsave("LT_TN.pdf", path = here("Plots"))
 
 
 ggplot() + 
-  scale_y_log10() +
+  scale_y_log10(guide = guide_axis_logticks()) +
   theme_classic() +
   geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(TP.mg_L)), 
-               aes(x=factor(plotYear), y=TP.mg_L, fill=factor(preLong)),
+               aes(x=factor(plotYear), y=TP.mg_L*1000, fill=factor(preLong)),
                outlier.size=0.5, lwd = 0.5) +
   scale_fill_manual(values=c("grey", "white")) +
-  geom_line(data = newdat3, 
-            aes(group = preLong, x = as.factor(plotYear), y = TP, 
+  geom_line(data = TP.ltemm, 
+            aes(group = preLong, x = as.factor(plotYear), y = response, 
                 colour = as.factor(preLong)),
             show.legend = F,
             lwd = 1.2) +
@@ -771,18 +892,18 @@ ggsave("LT_TP.pdf", path = here("Plots"))
 
 
 ggplot() + 
-  scale_y_log10() +
+  scale_y_log10(guide = guide_axis_logticks()) +
   theme_classic() +
   geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(NP.ratio)), 
                aes(x=factor(plotYear), y=NP.ratio, fill=factor(preLong)),
                outlier.size=0.5, lwd = 0.5) +
   scale_fill_manual(values=c("grey", "white")) +
-  geom_line(data = newdat3, 
-            aes(group = preLong, x = as.factor(plotYear), y = NP, 
+  geom_line(data = NP.ltemm, 
+            aes(group = preLong, x = as.factor(plotYear), y = response, 
                 colour = as.factor(preLong)),
             show.legend = F,
             lwd = 1.2) +
-  scale_color_manual(values=c(I("#005AB5"), I("black"))) +
+  scale_color_manual(values=c(I("#DC3220"), I("black"))) +
   ylab("TN:TP") +
   xlab("Years Relative to Alum Treatment") 
 
@@ -790,18 +911,18 @@ ggsave("LT_NP.pdf", path = here("Plots"))
 
 my_y_title <- expression(paste("Chlorophyll ", italic("a"), " (ug/L)"))
 ggplot() + 
-  scale_y_log10() +
+  scale_y_log10(guide = guide_axis_logticks()) +
   theme_classic() +
   geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(chla.ug_L)), 
                aes(x=factor(plotYear), y=chla.ug_L, fill=factor(preLong)),
                outlier.size=0.5, lwd = 0.5) +
   scale_fill_manual(values=c("grey", "white")) +
-  geom_line(data = newdat3, 
-            aes(group = preLong, x = as.factor(plotYear), y = chla, 
+  geom_line(data = chla.ltemm, 
+            aes(group = preLong, x = as.factor(plotYear), y = response, 
                 colour = as.factor(preLong)),
             show.legend = F,
             lwd = 1.2) +
-  scale_color_manual(values=c(I("#DC3220"), I("black"))) +
+  scale_color_manual(values=c(I("black"), I("black"))) +
   ylab(my_y_title) +
   xlab("Years Relative to Alum Treatment") 
 
@@ -809,18 +930,18 @@ ggsave("LT_chla.pdf", path = here("Plots"))
 
 
 ggplot() + 
-  #scale_y_log10() +
+  scale_y_log10(guide = guide_axis_logticks()) +
   theme_classic() +
   geom_boxplot(width = 0.7, show.legend = F, data = LongData2 %>% filter(!is.na(secchi.m)), 
                aes(x=factor(plotYear), y=secchi.m, fill=factor(preLong)),
                outlier.size=0.5, lwd = 0.5) +
   scale_fill_manual(values=c("grey", "white")) +
-  geom_line(data = newdat3, 
-            aes(group = preLong, x = as.factor(plotYear), y = Secchi, 
+  geom_line(data = secchi.ltemm, 
+            aes(group = preLong, x = as.factor(plotYear), y = response, 
                 colour = as.factor(preLong)),
             show.legend = F,
-            lwd = 1.2) +
-  scale_color_manual(values=c(I("#005AB5"), I("#DC3220"))) +
+            lwd = 1) +
+  scale_color_manual(values=c(I("black"), I("black"))) +
   ylab("Secchi Depth (m)") +
   xlab("Years Relative to Alum Treatment") 
 
@@ -877,11 +998,9 @@ TP.Litt.p <- lm(data = PrePost_Depth, TN_perc ~ TP_perc*Depth.Cat)
 S.Litt.p <- lm(data = PrePost_Depth, TN_perc ~ S_del*Depth.Cat)
 TP.S.Litt.p <- lm(data = PrePost_Depth, S_del ~ TP_perc*Depth.Cat)
 summary(TP.Litt.p)
-tidy(TP.Litt.p)
 summary(S.Litt.p)
-tidy(S.Litt.p)
 summary(TP.S.Litt.p)
-tidy(TP.S.Litt.p)
+
 
 test(emtrends(TP.Litt.p, "Depth.Cat", var = "TP_perc"))
 test(emtrends(S.Litt.p, "Depth.Cat", var = "S_del"))
@@ -1157,105 +1276,12 @@ ggsave("Kohlman_plants.pdf", path = here("Plots"))
 
 
 ```
-
-
-Notes on BACI lake selection:
-
-Washington: code 82 with 1 alum lake
-
+Stats for DeN assays
 ```{r}
-Washington <- AlumTimeseries %>%
-  filter(str_detect(DOW, "^82"))
+DeN <- read.csv(here("Data/DeN_Rates.csv"))
 
-Washington_option <- Washington %>%
-  filter(DOW == "82010400" | DOW == "82010300" | DOW == "82010100" | DOW == "82011800") %>%
-  filter(parameter == "TKN.mg_L") %>%
-  group_by(DOW) %>%
-  summarise(TP = mean(result))
-
-#Let's use 82010100 for avg depth and amount of TP although the others two have good data coverage if needed
-
-
-```
-
-Ramsey: code 62 with 4 alum lakes
-
-```{r}
-Ramsey <- AlumTimeseries %>%
-  filter(str_detect(DOW, "^62"))
-
-Ramsey_options <- Ramsey %>%
-  filter(DOW == "62006701" | DOW == "62006200" | DOW == "62005700" | DOW == "62008000" | DOW == "62002200") %>%
-  filter(parameter == "TKN.mg_L") %>%
-  group_by(DOW, sampleYear) %>%
-  summarise(n = n())
-
-#Let's use 62006701, 62006200, 62005700, 62002200
-
-```
-
-Scott: code 70 with 2 alum lakes
-
-```{r}
-Scott <- AlumTimeseries %>%
-  filter(str_detect(DOW, "^70"))
-
-Scott_options <- Scott %>%
-  filter(DOW == "70002600" | DOW == "70005000" | DOW == "70005400" | DOW == "70006900" | DOW == "70007200" | DOW == "70009100" | DOW == "70009500") %>%
-  filter(parameter == "TP.mg_L") %>%
-  group_by(DOW) %>%
-  summarise(average = mean(result))
-
-#Let's use 70005000, 70009500
-
-```
-
-Carver: code 10 with 3 alum lakes
-
-```{r}
-Carver <- AlumTimeseries %>%
-  filter(str_detect(DOW, "^10"))
-
-Carver_options <- Carver %>%
-  #filter(DOW == "70002600" | DOW == "70005000" | DOW == "70005400" | DOW == "70006900" | DOW == "70007200" | DOW == "70009100" | DOW == "70009500") %>%
-  filter(parameter == "TKN.mg_L") %>%
-  group_by(DOW, sampleYear) %>%
-  #summarise(average = mean(result))
-  summarise(n = n())
-
-#Let's use 10000700, 10005900, 10004200, 10001800,
-
-```
-
-Hennepin: code 27 with 13 alum lakes
-
-```{r}
-Hennepin <- AlumTimeseries %>%
-  filter(str_detect(DOW, "^27"))
-
-Hennepin_options <- Hennepin %>%
-  filter(parameter == "TP.mg_L") %>%
-  group_by(DOW) %>%
-  summarise(average = mean(result))
-  #summarise(n = n())
-
-#Selected 15 lakes, put into excel
-
-```
-
-Dakota: code 19 with 15 alum lakes
-
-```{r}
-Dakota <- AlumTimeseries %>%
-  filter(str_detect(DOW, "^19"))
-
-Dakota_options <- Dakota %>%
-  filter(parameter == "TP.mg_L") %>%
-  group_by(DOW) %>%
-  summarise(average = mean(result))
-  #summarise(n = n())
-
-#Selected 15 lakes, put into excel
+DeN %>% group_by(Treat) %>% summarise(avg = mean(DeN), sd = sd(DeN))
+t.test(data = DeN, DeN ~ Treat)
 
 ```
 
